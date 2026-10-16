@@ -1,3 +1,6 @@
 #buildを除外
 build
 toolchain-ucrt64
+
+#toolchainは自分で入れてね
+
