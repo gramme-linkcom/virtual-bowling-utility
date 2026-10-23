@@ -76,7 +76,7 @@ void print_usage() {
                  "  --conf F     検出の信頼度しきい値 0.01〜0.99 (既定: 0.25)\n"
                  "  --detector M 検出方法 yolo / cv (cv は YOLO を使わず OpenCV だけ。既定: 前回の選択)\n"
                  "  --cv-threshold N  OpenCV 検出の感度 1〜255 (小さいほど敏感。既定: 30)\n"
-                 "  --compute D  YOLO の計算装置 cpu / opencl / opencl_fp16 (既定: 前回の選択、無ければ cpu)\n"
+                 "  --compute D  YOLO の計算装置 cpu / onnxruntime / opencl / opencl_fp16 (既定: 前回の選択、無ければ cpu)\n"
                  "  --start      起動と同時に計測を開始する (既定: Web UI の「計測開始」を待つ)\n"
                  "  --output P   Unity が読む vector.txt のパス (既定: Web UI で設定した場所)\n"
                  "  --lane-width F   レーンの横幅 [m] (既定: 5、去年と同じ)\n"
@@ -213,7 +213,7 @@ bool parse_options(
             options.detector_mode = mode;
         } else if (arg == "--compute") {
             if (!has_value || !detection::parse_compute_target(argv[++i], options.detector.target)) {
-                error = "--compute には cpu / opencl / opencl_fp16 のどれかを指定してください";
+                error = "--compute には cpu / onnxruntime / opencl / opencl_fp16 のどれかを指定してください";
                 return false;
             }
             options.is_compute_explicit = true;

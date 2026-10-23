@@ -28,6 +28,8 @@ const char* to_string(ComputeTarget target) {
             return "opencl";
         case ComputeTarget::OpenClFp16:
             return "opencl_fp16";
+        case ComputeTarget::OnnxRuntime:
+            return "onnxruntime";
         case ComputeTarget::Cpu:
         default:
             return "cpu";
@@ -41,6 +43,8 @@ bool parse_compute_target(const std::string& text, ComputeTarget& target) {
         target = ComputeTarget::OpenCl;
     } else if (text == "opencl_fp16") {
         target = ComputeTarget::OpenClFp16;
+    } else if (text == "onnxruntime") {
+        target = ComputeTarget::OnnxRuntime;
     } else {
         return false;
     }
@@ -100,7 +104,34 @@ bool BallDetector::load_net(ComputeTarget target, cv::dnn::Net& net, std::string
     return true;
 }
 
+std::unique_ptr<OrtEngine> BallDetector::load_ort(std::string& error_message) const {
+    auto engine = std::make_unique<OrtEngine>();
+    if (!engine->load(config_.model_path, 0, error_message)) {
+        return nullptr;
+    }
+    // 試しに1回推論して、モデルと ONNX Runtime の組み合わせで動くことを確かめる。
+    const int size = config_.input_size;
+    const cv::Mat dummy(size, size, CV_8UC3, cv::Scalar(kLetterboxPadValue, kLetterboxPadValue, kLetterboxPadValue));
+    const cv::Mat blob =
+        cv::dnn::blobFromImage(dummy, kInputScale, cv::Size(size, size), cv::Scalar(), true, false);
+    cv::Mat output;
+    if (!engine->run(blob, output, error_message)) {
+        return nullptr;
+    }
+    return engine;
+}
+
 bool BallDetector::load(std::string& error_message) {
+    if (config_.target == ComputeTarget::OnnxRuntime) {
+        ort_ = load_ort(error_message);
+        if (ort_) {
+            is_loaded_ = true;
+            return true;
+        }
+        // ONNX Runtime が使えなければ OpenCV (CPU) で読み直す (起動できないよりはまし)。
+        std::cerr << "[detector] " << error_message << "。OpenCV (CPU) で動かします\n";
+        config_.target = ComputeTarget::Cpu;
+    }
     cv::dnn::Net net;
     if (!load_net(config_.target, net, error_message)) {
         if (config_.target == ComputeTarget::Cpu) {
@@ -127,11 +158,23 @@ bool BallDetector::set_target(ComputeTarget target, std::string& message) {
         message = std::string("すでに ") + to_string(target) + " で動いています";
         return true;
     }
+    if (target == ComputeTarget::OnnxRuntime) {
+        std::unique_ptr<OrtEngine> engine = load_ort(message);
+        if (!engine) {
+            return false;  // 今の装置のまま動き続ける
+        }
+        ort_ = std::move(engine);
+        config_.target = target;
+        has_warned_forward_ = false;
+        message = "ONNX Runtime (CPU) で推論します";
+        return true;
+    }
     cv::dnn::Net net;
     if (!load_net(target, net, message)) {
         return false;  // 今の net_ はそのまま (元の装置で動き続ける)
     }
     net_ = net;
+    ort_.reset();
     config_.target = target;
     has_warned_forward_ = false;
     message = target == ComputeTarget::Cpu ? "CPU で推論します" : "GPU (" + std::string(to_string(target)) + ") で推論します";
@@ -169,8 +212,19 @@ std::vector<Detection> BallDetector::detect(const cv::Mat& bgr_frame) {
     );
     cv::Mat output;
     try {
-        net_.setInput(blob);
-        output = net_.forward();
+        if (config_.target == ComputeTarget::OnnxRuntime && ort_) {
+            std::string error;
+            if (!ort_->run(blob, output, error)) {
+                if (!has_warned_forward_) {
+                    std::cerr << "[detector] " << error << "\n";
+                    has_warned_forward_ = true;
+                }
+                return results;
+            }
+        } else {
+            net_.setInput(blob);
+            output = net_.forward();
+        }
     } catch (const cv::Exception& e) {
         // 推論の失敗で検出スレッドごと落ちないようにする (GPU のドライバー不調など)。
         if (!has_warned_forward_) {

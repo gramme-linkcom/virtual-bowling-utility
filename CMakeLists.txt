@@ -34,6 +34,7 @@ add_executable(vb2026_utility_tools
     src/detection/detection_worker.cpp
     src/detection/motion_detector.cpp
     src/detection/switchable_detector.cpp
+    src/detection/ort_engine.cpp
     src/web/web_server.cpp
     src/trajectory/throw_tracker.cpp
     src/trajectory/throw_service.cpp
@@ -42,6 +43,8 @@ add_executable(vb2026_utility_tools
 
 target_include_directories(vb2026_utility_tools PRIVATE
     include
+    # ONNX Runtime の C API のヘッダー (DLL は実行時に読み込むのでリンク不要)
+    third_party/onnxruntime/include
     ${OpenCV_INCLUDE_DIRS}
 )
 
@@ -53,4 +56,16 @@ target_link_libraries(vb2026_utility_tools PRIVATE
 if(WIN32)
     # ws2_32: cpp-httplib / shell32: 日本語のコマンドライン引数を読む (CommandLineToArgvW)
     target_link_libraries(vb2026_utility_tools PRIVATE ws2_32 shell32)
+endif()
+
+# ONNX Runtime (CPU) の DLL を exe の隣にコピーする (Web UI の「計算: CPU (ONNX Runtime)」で使う)。
+# 無くてもビルド・起動はでき、ONNX Runtime を選んだときにエラーになるだけ。
+set(VB_ORT_DLL "${CMAKE_SOURCE_DIR}/third_party/onnxruntime/onnxruntime.dll")
+if(WIN32 AND EXISTS "${VB_ORT_DLL}")
+    add_custom_command(TARGET vb2026_utility_tools POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${VB_ORT_DLL}" "$<TARGET_FILE_DIR:vb2026_utility_tools>"
+    )
+endif()
+if(NOT WIN32)
+    target_link_libraries(vb2026_utility_tools PRIVATE ${CMAKE_DL_LIBS})
 endif()

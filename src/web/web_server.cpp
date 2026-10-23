@@ -91,7 +91,8 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
       </select>
       計算
       <select id="computeSel">
-        <option value="cpu">CPU</option>
+        <option value="cpu">CPU (OpenCV)</option>
+        <option value="onnxruntime">CPU (ONNX Runtime)</option>
         <option value="opencl">GPU (OpenCL)</option>
         <option value="opencl_fp16">GPU (OpenCL FP16)</option>
       </select>
@@ -274,7 +275,7 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
           (d.yolo_available === false ? ' — YOLO は使えません: ' + d.yolo_message : '');
       }
       if (d.enabled && d.compute !== undefined) {
-        const names = { cpu: 'CPU', opencl: 'GPU (OpenCL)', opencl_fp16: 'GPU (OpenCL FP16)' };
+        const names = { cpu: 'CPU (OpenCV)', onnxruntime: 'CPU (ONNX Runtime)', opencl: 'GPU (OpenCL)', opencl_fp16: 'GPU (OpenCL FP16)' };
         $('computeInfo').textContent = d.compute_switching ? '計算装置を切り替え中...'
           : 'YOLO の計算: ' + names[d.compute] + (d.compute_message ? ' — ' + d.compute_message : '');
       }

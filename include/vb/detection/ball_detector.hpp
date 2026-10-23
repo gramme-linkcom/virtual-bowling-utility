@@ -1,10 +1,12 @@
 #pragma once
 
 #include "vb/detection/detection.hpp"
+#include "vb/detection/ort_engine.hpp"
 
 #include <opencv2/core.hpp>
 #include <opencv2/dnn.hpp>
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -15,6 +17,7 @@ enum class ComputeTarget {
     Cpu,         // CPU (既定。どの PC でも動く)
     OpenCl,      // GPU (OpenCL)。NVIDIA / Intel / AMD のドライバーに入っている OpenCL を使う
     OpenClFp16,  // GPU (OpenCL, 16bit 浮動小数)。対応 GPU ならさらに速いことがある
+    OnnxRuntime, // CPU (ONNX Runtime)。OpenCV より速いことが多い。exe の隣に onnxruntime.dll が必要
 };
 
 const char* to_string(ComputeTarget target);
@@ -54,9 +57,12 @@ public:
 private:
     // target 用にモデルを読み込んで net に入れる。
     bool load_net(ComputeTarget target, cv::dnn::Net& net, std::string& error_message) const;
+    // ONNX Runtime 用にモデルを読み込み、試しに1回推論する。
+    std::unique_ptr<OrtEngine> load_ort(std::string& error_message) const;
 
     DetectorConfig config_;
     cv::dnn::Net net_;
+    std::unique_ptr<OrtEngine> ort_;  // target が OnnxRuntime のときだけ使う
     bool is_loaded_ = false;
     bool has_warned_output_ = false;
     bool has_warned_score_ = false;
