@@ -32,6 +32,9 @@ add_executable(vb2026_utility_tools
     src/detection/ball_detector.cpp
     src/detection/detection_worker.cpp
     src/web/web_server.cpp
+    src/trajectory/throw_tracker.cpp
+    src/trajectory/throw_service.cpp
+    src/transport/vector_file_writer.cpp
 )
 
 target_include_directories(vb2026_utility_tools PRIVATE
@@ -45,5 +48,6 @@ target_link_libraries(vb2026_utility_tools PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(vb2026_utility_tools PRIVATE ws2_32)
+    # ws2_32: cpp-httplib / shell32: 日本語のコマンドライン引数を読む (CommandLineToArgvW)
+    target_link_libraries(vb2026_utility_tools PRIVATE ws2_32 shell32)
 endif()

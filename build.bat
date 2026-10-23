@@ -16,10 +16,12 @@ if not defined TC (
 )
 
 echo [toolchain] %TC%
+rem PC に入っている別の g++ (w64devkit など) を拾わないよう、使うものを明示する
 set "PATH=%TC%\bin;%PATH%"
 
-cmake -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -S "%ROOT%." -B "%ROOT%build" || exit /b 1
+cmake -G Ninja -DCMAKE_CXX_COMPILER="%TC%/bin/g++.exe" -DCMAKE_MAKE_PROGRAM="%TC%/bin/ninja.exe" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -S "%ROOT%." -B "%ROOT%build" || exit /b 1
 cmake --build "%ROOT%build" || exit /b 1
 
 echo.
 echo [ok] %ROOT%build\vb2026_utility_tools.exe
+pause

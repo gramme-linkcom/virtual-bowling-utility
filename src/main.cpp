@@ -1,6 +1,7 @@
 #include "vb/camera/camera_stream.hpp"
 #include "vb/detection/ball_detector.hpp"
 #include "vb/detection/detection_worker.hpp"
+#include "vb/trajectory/throw_service.hpp"
 #include "vb/web/web_server.hpp"
 
 #include <atomic>
@@ -12,6 +13,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <vector>
 
 #include <opencv2/core/utils/logger.hpp>
 
@@ -23,11 +25,16 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <shellapi.h>
 #endif
 
 namespace {
 
 constexpr auto kShutdownPollInterval = std::chrono::milliseconds(100);
+// Web UI で変えた設定を覚えておくファイル (run.bat の場所 = プロジェクト直下)。
+constexpr const char* kSettingsPath = "settings.ini";
+// settings.ini に保存するカメラ番号のキー (Web UI で切り替えたときに書く)。
+constexpr const char* kCameraSettingKey = "camera";
 
 std::atomic<bool> g_stop_requested{false};
 
@@ -39,19 +46,29 @@ struct AppOptions {
     camera::CameraConfig camera;
     web::WebConfig web;
     detection::DetectorConfig detector;
+    trajectory::ThrowServiceConfig throws;
     // --model を明示したかどうか。明示したのに無ければ起動を止める。
     bool is_model_explicit = false;
+    // 起動したらすぐ計測を始める (Web UI の「計測開始」を押さなくてよい)。
+    bool start_armed = false;
+    bool is_camera_explicit = false;
 };
 
 void print_usage() {
     std::cout << "使い方: vb2026_utility_tools [オプション]\n"
-                 "  --camera N   カメラ番号 (既定: 0)\n"
+                 "  --camera N   カメラ番号 (既定: 前回 Web UI で選んだカメラ、無ければ 0)\n"
                  "  --width N    カメラの幅 (既定: カメラ任せ)\n"
                  "  --height N   カメラの高さ (既定: カメラ任せ)\n"
                  "  --port N     Web UI のポート (既定: 8080)\n"
                  "  --host H     待ち受けアドレス (既定: 127.0.0.1。別PCから見るなら 0.0.0.0)\n"
                  "  --model P    YOLO の ONNX ファイル (既定: models/best.onnx)\n"
                  "  --conf F     検出の信頼度しきい値 0.01〜0.99 (既定: 0.25)\n"
+                 "  --start      起動と同時に計測を開始する (既定: Web UI の「計測開始」を待つ)\n"
+                 "  --output P   Unity が読む vector.txt のパス (既定: Web UI で設定した場所)\n"
+                 "  --lane-width F   レーンの横幅 [m] (既定: 5、去年と同じ)\n"
+                 "  --speed-scale F  Unity に渡す速度の倍率 (既定: 1.0)\n"
+                 "  --end-wait F     ボールが止まって/消えてから確定するまでの秒数 (既定: 0.3)\n"
+                 "  --min-travel F   投球とみなす縦方向の移動 (画面の高さの割合、既定: 0.5)\n"
                  "  --help       この表示\n";
 }
 
@@ -83,8 +100,49 @@ bool parse_float(const std::string& text, float min_value, float max_value, floa
     }
 }
 
+bool parse_double(const std::string& text, double min_value, double max_value, double& value) {
+    float parsed = 0.0f;
+    if (!parse_float(text, static_cast<float>(min_value), static_cast<float>(max_value), parsed)) {
+        return false;
+    }
+    value = parsed;
+    return true;
+}
+
+// コマンドライン引数を UTF-8 で取り出す。
+// Windows の argv は Shift_JIS なので、日本語のパス (デスクトップ など) が化けないようにする。
+std::vector<std::string> utf8_arguments(int argc, char* argv[]) {
+    std::vector<std::string> args;
+#ifdef _WIN32
+    int count = 0;
+    LPWSTR* wide = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (wide != nullptr) {
+        for (int i = 0; i < count; ++i) {
+            const int size = WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, nullptr, 0, nullptr, nullptr);
+            std::string text(size > 0 ? size - 1 : 0, '\0');
+            if (size > 1) {
+                WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, text.data(), size, nullptr, nullptr);
+            }
+            args.push_back(std::move(text));
+        }
+        LocalFree(wide);
+        return args;
+    }
+#endif
+    for (int i = 0; i < argc; ++i) {
+        args.emplace_back(argv[i]);
+    }
+    return args;
+}
+
 // 成功したら true。--help のときは show_help を立てる。
-bool parse_options(int argc, char* argv[], AppOptions& options, bool& show_help, std::string& error) {
+bool parse_options(
+    const std::vector<std::string>& argv,
+    AppOptions& options,
+    bool& show_help,
+    std::string& error
+) {
+    const int argc = static_cast<int>(argv.size());
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         const bool has_value = (i + 1 < argc);
@@ -98,6 +156,7 @@ bool parse_options(int argc, char* argv[], AppOptions& options, bool& show_help,
                 error = "--camera には 0〜99 の数値を指定してください";
                 return false;
             }
+            options.is_camera_explicit = true;
         } else if (arg == "--width") {
             if (!has_value || !parse_int(argv[++i], 1, 7680, options.camera.width)) {
                 error = "--width には 1〜7680 の数値を指定してください";
@@ -131,6 +190,36 @@ bool parse_options(int argc, char* argv[], AppOptions& options, bool& show_help,
                 error = "--conf には 0.01〜0.99 の数値を指定してください";
                 return false;
             }
+        } else if (arg == "--start") {
+            options.start_armed = true;
+        } else if (arg == "--output") {
+            if (!has_value) {
+                error = "--output には vector.txt のパスを指定してください";
+                return false;
+            }
+            options.throws.output_path = argv[++i];
+        } else if (arg == "--lane-width") {
+            if (!has_value || !parse_double(argv[++i], 0.1, 100.0, options.throws.lane_width_m)) {
+                error = "--lane-width には 0.1〜100 の数値を指定してください";
+                return false;
+            }
+        } else if (arg == "--speed-scale") {
+            if (!has_value || !parse_double(argv[++i], 0.01, 100.0, options.throws.speed_scale)) {
+                error = "--speed-scale には 0.01〜100 の数値を指定してください";
+                return false;
+            }
+        } else if (arg == "--end-wait") {
+            if (!has_value ||
+                !parse_double(argv[++i], 0.05, 5.0, options.throws.tracker.end_wait_s)) {
+                error = "--end-wait には 0.05〜5 の数値を指定してください";
+                return false;
+            }
+        } else if (arg == "--min-travel") {
+            if (!has_value ||
+                !parse_double(argv[++i], 0.0, 1.0, options.throws.tracker.min_travel_ratio)) {
+                error = "--min-travel には 0〜1 の数値を指定してください";
+                return false;
+            }
         } else {
             error = "不明なオプションです: " + arg;
             return false;
@@ -152,7 +241,7 @@ int main(int argc, char* argv[]) {
     AppOptions options;
     bool show_help = false;
     std::string error;
-    if (!parse_options(argc, argv, options, show_help, error)) {
+    if (!parse_options(utf8_arguments(argc, argv), options, show_help, error)) {
         std::cerr << "[error] " << error << "\n";
         print_usage();
         return 1;
@@ -165,12 +254,37 @@ int main(int argc, char* argv[]) {
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
 
-    camera::CameraStream camera(options.camera);
-    if (!camera.start(error)) {
-        std::cerr << "[error][camera] " << error << "\n";
-        return 1;
+    // Web UI で変えた設定 (出力先・検出範囲・ボールの大きさ) はここに保存し、次回も使う。
+    // 出力先は --output を付けた場合はそちらが優先。
+    options.throws.settings_path = kSettingsPath;
+
+    // 投球の判定と Unity (vector.txt) への受け渡し。検出が無効でもテスト送信は使える。
+    trajectory::ThrowService throw_service(options.throws);
+    if (throw_service.snapshot().output_path.empty()) {
+        std::cerr << "[warn][throw] vector.txt の出力先が未設定です "
+                     "(Web UI か --output で指定してください)\n";
+    } else {
+        std::cout << "[throw] 出力先: " << throw_service.snapshot().output_path << "\n";
     }
-    std::cout << "[camera] opened index=" << options.camera.index << "\n";
+
+    if (options.start_armed) {
+        throw_service.set_armed(true);
+    }
+
+    // カメラ番号は --camera が優先。無ければ前回 Web UI で選んだカメラを使う。
+    if (!options.is_camera_explicit) {
+        int saved_index = 0;
+        if (parse_int(throw_service.setting(kCameraSettingKey), 0, 99, saved_index)) {
+            options.camera.index = saved_index;
+        }
+    }
+    // カメラが開けなくても終了しない (Web UI から別のカメラを選べるように)。
+    camera::CameraStream camera(options.camera);
+    if (camera.start(error)) {
+        std::cout << "[camera] opened index=" << options.camera.index << "\n";
+    } else {
+        std::cerr << "[error][camera] " << error << " (Web UI でカメラを選び直してください)\n";
+    }
 
     // 検出器。モデルが無い・読めないときも、映像の確認だけはできるように起動を続ける。
     // (--model を明示した場合は、間違いに気づけるよう起動を止める)
@@ -190,12 +304,27 @@ int main(int argc, char* argv[]) {
         std::cerr << "[error][detector] " << error << " (検出なしで起動します)\n";
     } else {
         detection_worker = std::make_unique<detection::DetectionWorker>(camera, detector);
+        detection_worker->set_result_callback([&throw_service](const detection::DetectionResult& r) {
+            std::vector<trajectory::BallCandidate> candidates;
+            candidates.reserve(r.detections.size());
+            for (const detection::Detection& d : r.detections) {
+                candidates.push_back(
+                    {d.box.x + d.box.width / 2.0,
+                     d.box.y + d.box.height / 2.0,
+                     d.confidence,
+                     (d.box.width + d.box.height) / 2.0}
+                );
+            }
+            throw_service.on_frame(r.timestamp_s, r.frame_width, r.frame_height, candidates);
+        });
         detection_worker->start();
         std::cout << "[detector] loaded " << options.detector.model_path
                   << " conf>=" << options.detector.conf_threshold << "\n";
     }
 
-    web::WebServer server(options.web, camera, detection_worker.get(), detection_message);
+    web::WebServer server(
+        options.web, camera, detection_worker.get(), detection_message, &throw_service
+    );
     if (!server.bind(error)) {
         std::cerr << "[error][web] " << error << "\n";
         return 1;

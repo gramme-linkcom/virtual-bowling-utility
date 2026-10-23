@@ -2,6 +2,7 @@
 
 #include "vb/camera/camera_stream.hpp"
 #include "vb/detection/detection_worker.hpp"
+#include "vb/trajectory/throw_service.hpp"
 
 #include <httplib.h>
 
@@ -16,7 +17,7 @@ struct WebConfig {
 };
 
 // ツール自体を操作・確認するための Web サーバー。
-// Unity への送信(HTTP POST)は別の責務なので、ここには置かない。
+// Unity への受け渡し (vector.txt) は ThrowService の責務。ここは表示とテスト送信の窓口だけ。
 class WebServer {
 public:
     // detection が nullptr のときは「検出なし」で動く。理由を detection_message に入れる。
@@ -24,7 +25,8 @@ public:
         WebConfig config,
         camera::CameraStream& camera,
         const detection::DetectionWorker* detection,
-        std::string detection_message
+        std::string detection_message,
+        trajectory::ThrowService* throws
     );
 
     WebServer(const WebServer&) = delete;
@@ -42,11 +44,14 @@ public:
 
 private:
     void register_routes();
+    // 投球判定が無効なら 503 を返して false。
+    bool require_throws(httplib::Response& res) const;
 
     WebConfig config_;
     camera::CameraStream& camera_;
     const detection::DetectionWorker* detection_;
     std::string detection_message_;
+    trajectory::ThrowService* throws_;
     httplib::Server server_;
 };
 

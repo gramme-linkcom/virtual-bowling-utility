@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -16,6 +17,7 @@ struct DetectionResult {
     int frame_width = 0;
     int frame_height = 0;
     double inference_ms = 0.0;  // 1フレームあたりの推論時間 (平滑化済み)
+    double timestamp_s = 0.0;  // フレームを受け取った時刻 (秒。steady_clock 基準)
     std::vector<Detection> detections;
 };
 
@@ -29,6 +31,10 @@ public:
     DetectionWorker(const DetectionWorker&) = delete;
     DetectionWorker& operator=(const DetectionWorker&) = delete;
 
+    // 1フレーム検出するたびに (検出スレッドから) 呼ばれる。start() より前に設定すること。
+    using ResultCallback = std::function<void(const DetectionResult&)>;
+    void set_result_callback(ResultCallback callback);
+
     void start();
     void stop();
 
@@ -41,6 +47,7 @@ private:
     BallDetector& detector_;
     std::thread thread_;
     std::atomic<bool> is_running_{false};
+    ResultCallback on_result_;
 
     mutable std::mutex mutex_;
     DetectionResult latest_;

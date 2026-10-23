@@ -19,17 +19,75 @@ constexpr double kFpsSmoothing = 0.1;
 
 }  // namespace
 
-CameraStream::CameraStream(CameraConfig config) : config_(config) {}
+CameraStream::CameraStream(CameraConfig config) : config_(config), index_(config.index) {}
 
 CameraStream::~CameraStream() {
     stop();
 }
 
 bool CameraStream::start(std::string& error_message) {
+    std::lock_guard<std::mutex> lock(control_mutex_);
+    return start_locked(error_message);
+}
+
+void CameraStream::stop() {
+    std::lock_guard<std::mutex> lock(control_mutex_);
+    stop_locked();
+}
+
+bool CameraStream::switch_to(int index, std::string& error_message) {
+    std::lock_guard<std::mutex> lock(control_mutex_);
+    const int previous = config_.index;
+    if (index == previous && is_running_) {
+        return true;
+    }
+    stop_locked();
+    config_.index = index;
+    index_ = index;
+    if (start_locked(error_message)) {
+        std::cout << "[camera] カメラ " << index << " に切り替えました\n";
+        return true;
+    }
+
+    // 新しいカメラが使えなかったので元に戻す。
+    std::cerr << "[camera] " << error_message << "。カメラ " << previous << " に戻します\n";
+    config_.index = previous;
+    index_ = previous;
+    std::string restore_error;
+    if (!start_locked(restore_error)) {
+        std::cerr << "[camera] 元のカメラも開けません: " << restore_error << "\n";
+    }
+    return false;
+}
+
+std::vector<int> CameraStream::find_cameras(int max_index) {
+    std::lock_guard<std::mutex> lock(control_mutex_);
+    std::vector<int> found;
+    for (int i = 0; i <= max_index; ++i) {
+        if (i == config_.index && is_running_) {
+            found.push_back(i);  // 使用中のカメラは開き直さない
+            continue;
+        }
+        cv::VideoCapture probe;
+        cv::Mat frame;
+        if (probe.open(i) && probe.read(frame) && !frame.empty()) {
+            found.push_back(i);
+        }
+        probe.release();
+    }
+    return found;
+}
+
+bool CameraStream::start_locked(std::string& error_message) {
     if (is_running_) {
         error_message = "カメラはすでに動作中です";
         return false;
     }
+    // 切断などで取得スレッドが自分で終わっていた場合は、片付けてから開き直す。
+    if (thread_.joinable()) {
+        thread_.join();
+    }
+    capture_.release();
     if (!capture_.open(config_.index)) {
         error_message = "カメラを開けません (番号: " + std::to_string(config_.index) + ")";
         return false;
@@ -55,7 +113,7 @@ bool CameraStream::start(std::string& error_message) {
     return true;
 }
 
-void CameraStream::stop() {
+void CameraStream::stop_locked() {
     is_running_ = false;
     condition_.notify_all();
     if (thread_.joinable()) {

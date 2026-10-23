@@ -21,6 +21,10 @@ DetectionWorker::~DetectionWorker() {
     stop();
 }
 
+void DetectionWorker::set_result_callback(ResultCallback callback) {
+    on_result_ = std::move(callback);
+}
+
 void DetectionWorker::start() {
     if (is_running_) {
         return;
@@ -65,12 +69,23 @@ void DetectionWorker::run() {
         smoothed_ms = (smoothed_ms == 0.0) ? elapsed_ms
                                            : (1.0 - kTimeSmoothing) * smoothed_ms + kTimeSmoothing * elapsed_ms;
 
-        std::lock_guard<std::mutex> lock(mutex_);
-        latest_.frame_id = frame_id;
-        latest_.frame_width = frame.cols;
-        latest_.frame_height = frame.rows;
-        latest_.inference_ms = smoothed_ms;
-        latest_.detections = std::move(detections);
+        DetectionResult result;
+        result.frame_id = frame_id;
+        result.frame_width = frame.cols;
+        result.frame_height = frame.rows;
+        result.inference_ms = smoothed_ms;
+        result.timestamp_s =
+            std::chrono::duration<double>(started.time_since_epoch()).count();
+        result.detections = std::move(detections);
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            latest_ = result;
+        }
+        // ロックの外で呼ぶ (Web サーバーが latest() で待たされないように)。
+        if (on_result_) {
+            on_result_(result);
+        }
     }
 }
 

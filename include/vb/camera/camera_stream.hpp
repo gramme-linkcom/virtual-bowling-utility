@@ -42,6 +42,14 @@ public:
     bool start(std::string& error_message);
     void stop();
 
+    // 別のカメラに切り替える。新しいカメラが使えなければ、元のカメラに戻して false を返す。
+    bool switch_to(int index, std::string& error_message);
+    // 0〜max_index のうち、映像が取れるカメラ番号を返す (使用中のカメラも含む)。数秒かかる。
+    std::vector<int> find_cameras(int max_index);
+    int index() const {
+        return index_.load();
+    }
+
     // last_frame_id より新しいフレームが来るまで待つ。来なければ false。
     bool wait_for_jpeg(
         std::uint64_t last_frame_id,
@@ -66,11 +74,17 @@ public:
 
 private:
     void capture_loop();
+    // control_mutex_ を取った状態で呼ぶ。
+    bool start_locked(std::string& error_message);
+    void stop_locked();
 
     CameraConfig config_;
     cv::VideoCapture capture_;
     std::thread thread_;
     std::atomic<bool> is_running_{false};
+    std::atomic<int> index_{0};
+    // 開始・停止・切り替え・カメラ探しを同時に行わないためのロック。
+    std::mutex control_mutex_;
 
     mutable std::mutex mutex_;
     std::condition_variable condition_;
