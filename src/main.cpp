@@ -1,6 +1,8 @@
 #include "vb/camera/camera_stream.hpp"
 #include "vb/detection/ball_detector.hpp"
 #include "vb/detection/detection_worker.hpp"
+#include "vb/detection/motion_detector.hpp"
+#include "vb/detection/switchable_detector.hpp"
 #include "vb/trajectory/throw_service.hpp"
 #include "vb/web/web_server.hpp"
 
@@ -10,6 +12,7 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -35,6 +38,9 @@ constexpr auto kShutdownPollInterval = std::chrono::milliseconds(100);
 constexpr const char* kSettingsPath = "settings.ini";
 // settings.ini に保存するカメラ番号のキー (Web UI で切り替えたときに書く)。
 constexpr const char* kCameraSettingKey = "camera";
+// settings.ini に保存する検出方法 (yolo / cv) と OpenCV 検出の感度のキー (web_server.cpp と同じ)。
+constexpr const char* kDetectorSettingKey = "detector";
+constexpr const char* kCvThresholdSettingKey = "cv_threshold";
 
 std::atomic<bool> g_stop_requested{false};
 
@@ -46,6 +52,9 @@ struct AppOptions {
     camera::CameraConfig camera;
     web::WebConfig web;
     detection::DetectorConfig detector;
+    detection::MotionDetectorConfig motion;
+    std::optional<detection::DetectorMode> detector_mode;  // --detector で指定したとき
+    bool is_cv_threshold_explicit = false;
     trajectory::ThrowServiceConfig throws;
     // --model を明示したかどうか。明示したのに無ければ起動を止める。
     bool is_model_explicit = false;
@@ -63,6 +72,8 @@ void print_usage() {
                  "  --host H     待ち受けアドレス (既定: 127.0.0.1。別PCから見るなら 0.0.0.0)\n"
                  "  --model P    YOLO の ONNX ファイル (既定: models/best.onnx)\n"
                  "  --conf F     検出の信頼度しきい値 0.01〜0.99 (既定: 0.25)\n"
+                 "  --detector M 検出方法 yolo / cv (cv は YOLO を使わず OpenCV だけ。既定: 前回の選択)\n"
+                 "  --cv-threshold N  OpenCV 検出の感度 1〜255 (小さいほど敏感。既定: 30)\n"
                  "  --start      起動と同時に計測を開始する (既定: Web UI の「計測開始」を待つ)\n"
                  "  --output P   Unity が読む vector.txt のパス (既定: Web UI で設定した場所)\n"
                  "  --lane-width F   レーンの横幅 [m] (既定: 5、去年と同じ)\n"
@@ -190,6 +201,19 @@ bool parse_options(
                 error = "--conf には 0.01〜0.99 の数値を指定してください";
                 return false;
             }
+        } else if (arg == "--detector") {
+            detection::DetectorMode mode = detection::DetectorMode::Yolo;
+            if (!has_value || !detection::parse_detector_mode(argv[++i], mode)) {
+                error = "--detector には yolo か cv を指定してください";
+                return false;
+            }
+            options.detector_mode = mode;
+        } else if (arg == "--cv-threshold") {
+            if (!has_value || !parse_int(argv[++i], 1, 255, options.motion.diff_threshold)) {
+                error = "--cv-threshold には 1〜255 の数値を指定してください";
+                return false;
+            }
+            options.is_cv_threshold_explicit = true;
         } else if (arg == "--start") {
             options.start_armed = true;
         } else if (arg == "--output") {
@@ -286,44 +310,68 @@ int main(int argc, char* argv[]) {
         std::cerr << "[error][camera] " << error << " (Web UI でカメラを選び直してください)\n";
     }
 
-    // 検出器。モデルが無い・読めないときも、映像の確認だけはできるように起動を続ける。
-    // (--model を明示した場合は、間違いに気づけるよう起動を止める)
-    detection::BallDetector detector(options.detector);
-    std::unique_ptr<detection::DetectionWorker> detection_worker;
+    // 検出器は2種類。YOLO (モデルが読めたときだけ) と、OpenCV だけの検出 (いつでも使える)。
+    // モデルが無い・読めないときは OpenCV だけで動く。
+    // (--model を明示したのに無い場合は、間違いに気づけるよう起動を止める)
+    detection::BallDetector yolo(options.detector);
     std::string detection_message;
     std::error_code file_error;
+    bool is_yolo_loaded = false;
     if (!std::filesystem::exists(options.detector.model_path, file_error)) {
         detection_message = "モデルが見つかりません: " + options.detector.model_path;
         if (options.is_model_explicit) {
             std::cerr << "[error][detector] " << detection_message << "\n";
             return 1;
         }
-        std::cerr << "[warn][detector] " << detection_message << " (検出なしで起動します)\n";
-    } else if (!detector.load(error)) {
+        std::cerr << "[warn][detector] " << detection_message << " (OpenCV だけで検出します)\n";
+    } else if (!yolo.load(error)) {
         detection_message = error;
-        std::cerr << "[error][detector] " << error << " (検出なしで起動します)\n";
+        std::cerr << "[error][detector] " << error << " (OpenCV だけで検出します)\n";
     } else {
-        detection_worker = std::make_unique<detection::DetectionWorker>(camera, detector);
-        detection_worker->set_result_callback([&throw_service](const detection::DetectionResult& r) {
-            std::vector<trajectory::BallCandidate> candidates;
-            candidates.reserve(r.detections.size());
-            for (const detection::Detection& d : r.detections) {
-                candidates.push_back(
-                    {d.box.x + d.box.width / 2.0,
-                     d.box.y + d.box.height / 2.0,
-                     d.confidence,
-                     (d.box.width + d.box.height) / 2.0}
-                );
-            }
-            throw_service.on_frame(r.timestamp_s, r.frame_width, r.frame_height, candidates);
-        });
-        detection_worker->start();
+        is_yolo_loaded = true;
         std::cout << "[detector] loaded " << options.detector.model_path
                   << " conf>=" << options.detector.conf_threshold << "\n";
     }
 
+    // 検出方法と OpenCV の感度は、コマンドライン > 前回 Web UI で選んだもの > 既定 (YOLO) の順。
+    detection::DetectorMode mode = detection::DetectorMode::Yolo;
+    if (options.detector_mode) {
+        mode = *options.detector_mode;
+    } else {
+        detection::parse_detector_mode(throw_service.setting(kDetectorSettingKey), mode);
+    }
+    if (!options.is_cv_threshold_explicit) {
+        parse_int(throw_service.setting(kCvThresholdSettingKey), 1, 255, options.motion.diff_threshold);
+    }
+    detection::MotionDetector motion(options.motion);
+    detection::SwitchableDetector detector(is_yolo_loaded ? &yolo : nullptr, motion, mode);
+    std::cout << "[detector] 検出方法: "
+              << (detector.mode() == detection::DetectorMode::Yolo ? "YOLO" : "OpenCV だけ")
+              << "\n";
+
+    auto detection_worker = std::make_unique<detection::DetectionWorker>(camera, detector);
+    detection_worker->set_result_callback([&throw_service](const detection::DetectionResult& r) {
+        std::vector<trajectory::BallCandidate> candidates;
+        candidates.reserve(r.detections.size());
+        for (const detection::Detection& d : r.detections) {
+            candidates.push_back(
+                {d.box.x + d.box.width / 2.0,
+                 d.box.y + d.box.height / 2.0,
+                 d.confidence,
+                 (d.box.width + d.box.height) / 2.0}
+            );
+        }
+        throw_service.on_frame(r.timestamp_s, r.frame_width, r.frame_height, candidates);
+    });
+    detection_worker->start();
+
     web::WebServer server(
-        options.web, camera, detection_worker.get(), detection_message, &throw_service
+        options.web,
+        camera,
+        detection_worker.get(),
+        detection_message,
+        &throw_service,
+        &detector
     );
     if (!server.bind(error)) {
         std::cerr << "[error][web] " << error << "\n";

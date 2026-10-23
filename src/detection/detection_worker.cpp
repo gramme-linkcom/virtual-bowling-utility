@@ -14,7 +14,7 @@ constexpr double kTimeSmoothing = 0.1;
 
 }  // namespace
 
-DetectionWorker::DetectionWorker(camera::CameraStream& camera, BallDetector& detector)
+DetectionWorker::DetectionWorker(camera::CameraStream& camera, IBallDetector& detector)
     : camera_(camera), detector_(detector) {}
 
 DetectionWorker::~DetectionWorker() {

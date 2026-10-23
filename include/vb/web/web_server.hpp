@@ -2,6 +2,7 @@
 
 #include "vb/camera/camera_stream.hpp"
 #include "vb/detection/detection_worker.hpp"
+#include "vb/detection/switchable_detector.hpp"
 #include "vb/trajectory/throw_service.hpp"
 
 #include <httplib.h>
@@ -26,7 +27,8 @@ public:
         camera::CameraStream& camera,
         const detection::DetectionWorker* detection,
         std::string detection_message,
-        trajectory::ThrowService* throws
+        trajectory::ThrowService* throws,
+        detection::SwitchableDetector* detector
     );
 
     WebServer(const WebServer&) = delete;
@@ -52,6 +54,7 @@ private:
     const detection::DetectionWorker* detection_;
     std::string detection_message_;
     trajectory::ThrowService* throws_;
+    detection::SwitchableDetector* detector_;
     httplib::Server server_;
 };
 

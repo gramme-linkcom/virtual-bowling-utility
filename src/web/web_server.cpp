@@ -82,7 +82,19 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
   </section>
 
   <section class="panel">
-    <h2>検出範囲・ボール</h2>
+    <h2>検出方法・検出範囲・ボール</h2>
+    <div class="row">
+      検出方法
+      <select id="modeSel">
+        <option value="yolo">YOLO</option>
+        <option value="cv">OpenCV だけ (YOLO を使わない)</option>
+      </select>
+      感度 <input id="cvTh" type="number" min="1" max="255" step="1" value="30">
+      <button id="modeBtn">適用</button>
+      <span id="modeMsg" class="muted"></span>
+    </div>
+    <div class="muted">OpenCV だけ: 背景との差で「動いている丸い物」を探します (止まっている物は検出しません)。
+      感度は小さいほど敏感です。影や人を拾うときは大きく、ボールを拾えないときは小さくしてください。</div>
     <div class="row">
       <button id="roiBtn">検出範囲を設定 (映像をドラッグ)</button>
       <button class="sub" id="roiClearBtn">範囲を解除</button>
@@ -248,7 +260,14 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
         detStat.textContent = '検出: 待機中';
       } else {
         detStat.className = 'stat';
-        detStat.textContent = `検出 ${d.detections.length} 件 / 推論 ${d.inference_ms.toFixed(1)} ms`;
+        const label = d.mode === 'cv' ? 'OpenCV' : 'YOLO';
+        detStat.textContent = `検出 (${label}) ${d.detections.length} 件 / ${d.inference_ms.toFixed(1)} ms` +
+          (d.yolo_available === false ? ' — YOLO は使えません: ' + d.yolo_message : '');
+      }
+      if (d.enabled && d.mode && !modeTouched) {
+        $('modeSel').value = d.mode;
+        $('cvTh').value = d.cv_threshold;
+        $('modeSel').querySelector('option[value=yolo]').disabled = d.yolo_available === false;
       }
     } catch (e) {
       detData = null;
@@ -322,6 +341,14 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
     }
     pollThrow();
   }
+
+  let modeTouched = false;
+  $('modeSel').addEventListener('change', () => { modeTouched = true; });
+  $('cvTh').addEventListener('input', () => { modeTouched = true; });
+  $('modeBtn').addEventListener('click', async () => {
+    await action('/api/detector', { mode: $('modeSel').value, threshold: $('cvTh').value }, 'modeMsg');
+    modeTouched = false;
+  });
 
   $('startBtn').addEventListener('click', () => action('/api/armed', { on: '1' }));
   $('stopBtn').addEventListener('click', () => action('/api/armed', { on: '0' }));
@@ -539,13 +566,15 @@ WebServer::WebServer(
     camera::CameraStream& camera,
     const detection::DetectionWorker* detection,
     std::string detection_message,
-    trajectory::ThrowService* throws
+    trajectory::ThrowService* throws,
+    detection::SwitchableDetector* detector
 )
     : config_(std::move(config)),
       camera_(camera),
       detection_(detection),
       detection_message_(std::move(detection_message)),
-      throws_(throws) {
+      throws_(throws),
+      detector_(detector) {
     register_routes();
 }
 
@@ -600,7 +629,14 @@ void WebServer::register_routes() {
         } else {
             const detection::DetectionResult result = detection_->latest();
             json << std::fixed << std::setprecision(1);
-            json << "{\"enabled\":true,\"frame_id\":" << result.frame_id
+            json << "{\"enabled\":true";
+            if (detector_ != nullptr) {
+                json << ",\"mode\":\"" << detection::to_string(detector_->mode())
+                     << "\",\"yolo_available\":" << (detector_->has_yolo() ? "true" : "false")
+                     << ",\"yolo_message\":\"" << json_escape(detection_message_)
+                     << "\",\"cv_threshold\":" << detector_->cv_threshold();
+            }
+            json << ",\"frame_id\":" << result.frame_id
                  << ",\"frame_width\":" << result.frame_width
                  << ",\"frame_height\":" << result.frame_height
                  << ",\"inference_ms\":" << result.inference_ms << ",\"detections\":[";
@@ -693,6 +729,40 @@ void WebServer::register_routes() {
         const bool on = req.get_param_value("on") == "1";
         throws_->set_armed(on);
         send_result(res, true, on ? "計測を開始しました" : "計測を停止しました");
+    });
+
+    // 検出方法 (mode=yolo/cv) と OpenCV 検出の感度 (threshold=1〜255)。settings.ini に保存する。
+    server_.Post("/api/detector", [this](const httplib::Request& req, httplib::Response& res) {
+        if (detector_ == nullptr) {
+            send_result(res, false, "検出が無効です");
+            return;
+        }
+        std::string message = "設定しました";
+        if (req.has_param("mode")) {
+            detection::DetectorMode mode = detection::DetectorMode::Yolo;
+            if (!detection::parse_detector_mode(req.get_param_value("mode"), mode)) {
+                send_result(res, false, "検出方法の値が不正です");
+                return;
+            }
+            if (!detector_->set_mode(mode, message)) {
+                send_result(res, false, message);
+                return;
+            }
+        }
+        if (req.has_param("threshold")) {
+            double threshold = 0.0;
+            if (!read_number(req, "threshold", threshold) || threshold < 1 || threshold > 255) {
+                send_result(res, false, "感度は 1〜255 の数値で入れてください");
+                return;
+            }
+            detector_->set_cv_threshold(static_cast<int>(threshold));
+        }
+        // main.cpp の kDetectorSettingKey / kCvThresholdSettingKey と同じキー。
+        if (throws_ != nullptr) {
+            throws_->set_setting("detector", detection::to_string(detector_->mode()));
+            throws_->set_setting("cv_threshold", std::to_string(detector_->cv_threshold()));
+        }
+        send_result(res, true, message);
     });
 
     // 使えるカメラを探す (数秒かかる)。

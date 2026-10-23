@@ -24,13 +24,16 @@ FetchContent_MakeAvailable(cpp_httplib)
 # OpenCV は toolchain (MSYS2 ucrt64) 同梱のものを使う。
 # highgui (Qt に依存する) は使わず、画面は Web UI に出す。
 # dnn は YOLO (ONNX) の推論に使う。
-find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio imgcodecs dnn)
+# geometry は OpenCV だけの検出 (輪郭の面積・外接円) に使う (OpenCV 5 で imgproc から分かれた)。
+find_package(OpenCV REQUIRED COMPONENTS core imgproc geometry videoio imgcodecs dnn)
 
 add_executable(vb2026_utility_tools
     src/main.cpp
     src/camera/camera_stream.cpp
     src/detection/ball_detector.cpp
     src/detection/detection_worker.cpp
+    src/detection/motion_detector.cpp
+    src/detection/switchable_detector.cpp
     src/web/web_server.cpp
     src/trajectory/throw_tracker.cpp
     src/trajectory/throw_service.cpp

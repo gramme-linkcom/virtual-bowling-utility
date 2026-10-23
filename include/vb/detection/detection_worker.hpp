@@ -1,7 +1,7 @@
 #pragma once
 
 #include "vb/camera/camera_stream.hpp"
-#include "vb/detection/ball_detector.hpp"
+#include "vb/detection/detection.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -25,7 +25,7 @@ struct DetectionResult {
 // 推論が遅れたときは古いフレームを捨てる (溜めない)。
 class DetectionWorker {
 public:
-    DetectionWorker(camera::CameraStream& camera, BallDetector& detector);
+    DetectionWorker(camera::CameraStream& camera, IBallDetector& detector);
     ~DetectionWorker();
 
     DetectionWorker(const DetectionWorker&) = delete;
@@ -44,7 +44,7 @@ private:
     void run();
 
     camera::CameraStream& camera_;
-    BallDetector& detector_;
+    IBallDetector& detector_;
     std::thread thread_;
     std::atomic<bool> is_running_{false};
     ResultCallback on_result_;
