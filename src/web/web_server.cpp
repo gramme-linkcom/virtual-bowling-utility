@@ -47,10 +47,48 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
   .badge { font-weight: bold; padding: 4px 10px; border-radius: 4px; background: #444; }
   .badge.on { background: #1f9d55; }
   .muted { color: #999; font-size: 13px; }
+  /* ゲーム操作 (Unity) のバー: スクロールしても上に残る */
+  .gamebar { position: sticky; top: 0; z-index: 10; background: #182030; border-bottom: 2px solid #2d6cdf;
+             padding: 10px 16px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .gamebar .title { font-weight: bold; margin-right: 4px; }
+  .gamebar button { font-size: 17px; padding: 10px 18px; border-radius: 6px; }
+  .gamebar button.go { background: #1f9d55; }
+  .gamebar button.reset { background: #c0392b; }
+  .gamebar button.wall { background: #444; }
+  .gamebar button.wall.active { background: #d68910; }
+  .gamebar .group { display: flex; gap: 6px; align-items: center; padding: 0 8px; border-left: 1px solid #33415c; }
+  .gamebar .badge.ok { background: #1f9d55; }
+  .gamebar .namebar { flex-basis: 100%; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+                      background: #4a3b00; border: 2px solid #f1c40f; border-radius: 8px; padding: 8px 12px; }
+  .gamebar .namebar[hidden] { display: none; }
+  .gamebar .namebar input { font-size: 18px; padding: 8px; width: 260px; background: #000; color: #fff;
+                            border: 1px solid #f1c40f; border-radius: 4px; }
+  .gamebar .badge.ng { background: #7f2a2a; }
 </style>
 </head>
 <body>
 <header><strong>VB2026 Utility Tools</strong></header>
+<div class="gamebar">
+  <span class="title">ゲーム操作</span>
+  <span class="badge ng" id="unityBadge">Unity: 未接続</span>
+  <button class="go" id="uStart" title="スタート画面・メニュー画面のスペースキーと同じ">▶ スタート (Space)</button>
+  <button class="reset" id="uReset" title="Esc キーと同じ (1投目からやり直し)">↺ リセット (Esc)</button>
+  <span class="group">ガーターの壁
+    <button class="wall" id="uWallOn">ON</button>
+    <button class="wall" id="uWallOff">OFF</button>
+  </span>
+  <span class="group">モード選択
+    <button class="sub" id="uPrev" title="メニュー画面の ← キー">◀</button>
+    <button class="sub" id="uNext" title="メニュー画面の → キー">▶</button>
+  </span>
+  <span class="muted" id="unityMsg"></span>
+  <div class="namebar" id="nameBar" hidden>
+    <span class="title">🏆 ハイスコア！</span>
+    <span id="nameScore"></span>
+    名前 <input id="nameInput" type="text" maxlength="20" placeholder="プレイヤーの名前" autocomplete="off">
+    <button class="go" id="nameSend">決定 (OK)</button>
+  </div>
+</div>
 <main>
   <div class="view" id="view">
     <img id="cam" src="/stream" alt="camera">
@@ -488,6 +526,58 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
     }
   });
 
+  // ---- ゲーム操作 (Unity) ----
+  async function unityCommand(cmd, label) {
+    try {
+      const d = await post('/api/unity/command', { cmd });
+      flash('unityMsg', d.ok ? label + ' を送りました' : d.message, d.ok);
+    } catch (e) {
+      flash('unityMsg', '送れませんでした', false);
+    }
+  }
+  $('uStart').addEventListener('click', () => unityCommand('start', 'スタート'));
+  $('uReset').addEventListener('click', () => unityCommand('reset', 'リセット'));
+  $('uWallOn').addEventListener('click', () => unityCommand('gutter_on', 'ガーターの壁 ON'));
+  $('uWallOff').addEventListener('click', () => unityCommand('gutter_off', 'ガーターの壁 OFF'));
+  $('uPrev').addEventListener('click', () => unityCommand('mode_prev', 'モード ◀'));
+  $('uNext').addEventListener('click', () => unityCommand('mode_next', 'モード ▶'));
+
+  async function sendName() {
+    const name = $('nameInput').value;
+    try {
+      const d = await post('/api/unity/name', { name });
+      flash('unityMsg', d.message, d.ok);
+      if (d.ok) $('nameInput').value = '';
+    } catch (e) {
+      flash('unityMsg', '送れませんでした', false);
+    }
+  }
+  $('nameSend').addEventListener('click', sendName);
+  $('nameInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) sendName(); });
+
+  let wasWaitingName = false;
+  async function pollUnity() {
+    const badge = $('unityBadge');
+    try {
+      const r = await fetch('/api/unity/status', { cache: 'no-store' });
+      const u = await r.json();
+      const names = { StartMenu: 'スタート画面', Playing: 'プレイ中', Menu: 'メニュー画面' };
+      badge.className = 'badge ' + (u.connected ? 'ok' : 'ng');
+      badge.textContent = u.connected ? 'Unity: ' + (names[u.state] || u.state || '接続中') : 'Unity: 未接続';
+      $('uWallOn').classList.toggle('active', u.gutter_wall === true);
+      $('uWallOff').classList.toggle('active', u.gutter_wall === false);
+      // ハイスコアの名前入力欄が Unity に出ている間だけ、入力欄を出す
+      const waiting = u.connected && u.name_input;
+      $('nameBar').hidden = !waiting;
+      $('nameScore').textContent = u.score >= 0 ? `スコア ${u.score}` : '';
+      if (waiting && !wasWaitingName) $('nameInput').focus();
+      wasWaitingName = waiting;
+    } catch (e) {
+      badge.className = 'badge ng';
+      badge.textContent = 'ツールに接続できません';
+    }
+  }
+
   async function pollStatus() {
     const stat = $('stat');
     try {
@@ -514,6 +604,8 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
   pollDetections();
   pollThrow();
   setInterval(pollStatus, 1000);
+  pollUnity();
+  setInterval(pollUnity, 1000);
   setInterval(pollDetections, 100);
   setInterval(pollThrow, 200);
 </script>
@@ -754,6 +846,86 @@ void WebServer::register_routes() {
         const bool on = req.get_param_value("on") == "1";
         throws_->set_armed(on);
         send_result(res, true, on ? "計測を開始しました" : "計測を停止しました");
+    });
+
+    // ---- Unity との連携 ----
+    // Unity (RemoteControl.cs) が 0.2 秒ごとに呼ぶ。状態を受け取り、たまっている命令を返す。
+    server_.Get("/api/unity/poll", [this](const httplib::Request& req, httplib::Response& res) {
+        std::optional<bool> gutter;
+        if (req.has_param("gutter")) {
+            gutter = req.get_param_value("gutter") == "1";
+        }
+        int score = -1;
+        try {
+            if (req.has_param("score")) {
+                score = std::stoi(req.get_param_value("score"));
+            }
+        } catch (const std::exception&) {
+            score = -1;
+        }
+        const std::vector<std::string> commands = unity_.poll(
+            req.get_param_value("scene"),
+            req.get_param_value("state"),
+            gutter,
+            req.get_param_value("name_input") == "1",
+            score
+        );
+        std::string json = "{\"commands\":[";
+        for (std::size_t i = 0; i < commands.size(); ++i) {
+            json += (i == 0 ? "\"" : ",\"") + json_escape(commands[i]) + "\"";
+        }
+        json += "]}";
+        res.set_header("Cache-Control", "no-store");
+        res.set_content(json, "application/json");
+    });
+
+    // Web UI の「ゲーム操作」ボタンから (cmd=start/reset/gutter_on/gutter_off/mode_prev/mode_next)。
+    server_.Post("/api/unity/command", [this](const httplib::Request& req, httplib::Response& res) {
+        const std::string cmd = req.get_param_value("cmd");
+        if (!UnityLink::is_valid_command(cmd)) {
+            send_result(res, false, "不明な操作です: " + cmd);
+            return;
+        }
+        if (!unity_.status().is_connected) {
+            send_result(res, false, "Unity とつながっていません (Unity を起動しているか確認)");
+            return;
+        }
+        unity_.push(cmd);
+        send_result(res, true, "送りました");
+    });
+
+    // ハイスコアの名前を Web UI から入れる (name=...)。名前入力欄が出ているときだけ受け付ける。
+    server_.Post("/api/unity/name", [this](const httplib::Request& req, httplib::Response& res) {
+        const UnityStatus s = unity_.status();
+        if (!s.is_connected) {
+            send_result(res, false, "Unity とつながっていません");
+            return;
+        }
+        if (!s.is_waiting_name) {
+            send_result(res, false, "今は名前入力の画面ではありません");
+            return;
+        }
+        std::string command;
+        std::string error;
+        if (!UnityLink::make_name_command(req.get_param_value("name"), command, error)) {
+            send_result(res, false, error);
+            return;
+        }
+        unity_.push(command);
+        send_result(res, true, "名前を送りました");
+    });
+
+    server_.Get("/api/unity/status", [this](const httplib::Request&, httplib::Response& res) {
+        const UnityStatus s = unity_.status();
+        std::ostringstream json;
+        json << "{\"connected\":" << (s.is_connected ? "true" : "false") << ",\"scene\":\""
+             << json_escape(s.scene) << "\",\"state\":\"" << json_escape(s.state)
+             << "\",\"gutter_wall\":"
+             << (s.is_gutter_wall ? (*s.is_gutter_wall ? "true" : "false") : "null")
+             << ",\"name_input\":" << (s.is_waiting_name ? "true" : "false")
+             << ",\"score\":" << s.score << ",\"last_seen_ms\":" << s.last_seen_ms << "}";
+        res.set_header("Cache-Control", "no-store");
+        res.set_content(json.str(), "application/json");
     });
 
     // 検出方法 (mode=yolo/cv) と OpenCV 検出の感度 (threshold=1〜255)。settings.ini に保存する。

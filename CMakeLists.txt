@@ -42,6 +42,7 @@ add_executable(vb2026_utility_tools
     src/detection/switchable_detector.cpp
     src/detection/ort_engine.cpp
     src/web/web_server.cpp
+    src/web/unity_link.cpp
     src/trajectory/throw_tracker.cpp
     src/trajectory/throw_service.cpp
     src/transport/vector_file_writer.cpp

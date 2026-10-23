@@ -4,6 +4,7 @@
 #include "vb/detection/detection_worker.hpp"
 #include "vb/detection/switchable_detector.hpp"
 #include "vb/trajectory/throw_service.hpp"
+#include "vb/web/unity_link.hpp"
 
 #include <httplib.h>
 
@@ -56,6 +57,7 @@ private:
     trajectory::ThrowService* throws_;
     detection::SwitchableDetector* detector_;
     httplib::Server server_;
+    UnityLink unity_;  // Web UI の「ゲーム操作」→ Unity (RemoteControl.cs) の中継
 };
 
 }  // namespace web
