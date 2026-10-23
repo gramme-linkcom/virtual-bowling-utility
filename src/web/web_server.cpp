@@ -89,11 +89,20 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
         <option value="yolo">YOLO</option>
         <option value="cv">OpenCV だけ (YOLO を使わない)</option>
       </select>
+      計算
+      <select id="computeSel">
+        <option value="cpu">CPU</option>
+        <option value="opencl">GPU (OpenCL)</option>
+        <option value="opencl_fp16">GPU (OpenCL FP16)</option>
+      </select>
       感度 <input id="cvTh" type="number" min="1" max="255" step="1" value="30">
       <button id="modeBtn">適用</button>
       <span id="modeMsg" class="muted"></span>
     </div>
-    <div class="muted">OpenCV だけ: 背景との差で「動いている丸い物」を探します (止まっている物は検出しません)。
+    <div class="muted" id="computeInfo"></div>
+    <div class="muted">計算: YOLO を CPU と GPU (OpenCL) のどちらで動かすか。切り替えて上の「○○ ms」を見比べ、速い方を使ってください
+      (GPU は最初の切り替えに数秒かかります。小さいモデルでは CPU の方が速いこともあります)。<br>
+      OpenCV だけ: 背景との差で「動いている丸い物」を探します (止まっている物は検出しません)。
       感度は小さいほど敏感です。影や人を拾うときは大きく、ボールを拾えないときは小さくしてください。</div>
     <div class="row">
       <button id="roiBtn">検出範囲を設定 (映像をドラッグ)</button>
@@ -264,9 +273,16 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
         detStat.textContent = `検出 (${label}) ${d.detections.length} 件 / ${d.inference_ms.toFixed(1)} ms` +
           (d.yolo_available === false ? ' — YOLO は使えません: ' + d.yolo_message : '');
       }
+      if (d.enabled && d.compute !== undefined) {
+        const names = { cpu: 'CPU', opencl: 'GPU (OpenCL)', opencl_fp16: 'GPU (OpenCL FP16)' };
+        $('computeInfo').textContent = d.compute_switching ? '計算装置を切り替え中...'
+          : 'YOLO の計算: ' + names[d.compute] + (d.compute_message ? ' — ' + d.compute_message : '');
+      }
       if (d.enabled && d.mode && !modeTouched) {
         $('modeSel').value = d.mode;
         $('cvTh').value = d.cv_threshold;
+        if (d.compute) $('computeSel').value = d.compute;
+        $('computeSel').disabled = d.yolo_available === false;
         $('modeSel').querySelector('option[value=yolo]').disabled = d.yolo_available === false;
       }
     } catch (e) {
@@ -345,8 +361,11 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
   let modeTouched = false;
   $('modeSel').addEventListener('change', () => { modeTouched = true; });
   $('cvTh').addEventListener('input', () => { modeTouched = true; });
+  $('computeSel').addEventListener('change', () => { modeTouched = true; });
   $('modeBtn').addEventListener('click', async () => {
-    await action('/api/detector', { mode: $('modeSel').value, threshold: $('cvTh').value }, 'modeMsg');
+    const params = { mode: $('modeSel').value, threshold: $('cvTh').value };
+    if (!$('computeSel').disabled) params.compute = $('computeSel').value;
+    await action('/api/detector', params, 'modeMsg');
     modeTouched = false;
   });
 
@@ -634,7 +653,12 @@ void WebServer::register_routes() {
                 json << ",\"mode\":\"" << detection::to_string(detector_->mode())
                      << "\",\"yolo_available\":" << (detector_->has_yolo() ? "true" : "false")
                      << ",\"yolo_message\":\"" << json_escape(detection_message_)
-                     << "\",\"cv_threshold\":" << detector_->cv_threshold();
+                     << "\",\"cv_threshold\":" << detector_->cv_threshold()
+                     << ",\"compute\":\"" << detection::to_string(detector_->compute())
+                     << "\",\"compute_switching\":"
+                     << (detector_->is_compute_switching() ? "true" : "false")
+                     << ",\"compute_message\":\"" << json_escape(detector_->compute_message())
+                     << "\"";
             }
             json << ",\"frame_id\":" << result.frame_id
                  << ",\"frame_width\":" << result.frame_width
@@ -747,6 +771,22 @@ void WebServer::register_routes() {
             if (!detector_->set_mode(mode, message)) {
                 send_result(res, false, message);
                 return;
+            }
+        }
+        if (req.has_param("compute")) {
+            detection::ComputeTarget target = detection::ComputeTarget::Cpu;
+            if (!detection::parse_compute_target(req.get_param_value("compute"), target)) {
+                send_result(res, false, "計算装置の値が不正です");
+                return;
+            }
+            // 変わるときだけ頼む (モデルの読み直しに時間がかかるので)。
+            if (target != detector_->compute() && detector_->has_yolo()) {
+                std::string compute_message;
+                detector_->request_compute(target, compute_message);
+                message += " / " + compute_message;
+            }
+            if (throws_ != nullptr) {
+                throws_->set_setting("compute", detection::to_string(target));
             }
         }
         if (req.has_param("threshold")) {

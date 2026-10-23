@@ -52,6 +52,74 @@ void ThrowTracker::reset() {
     has_moved_ = false;
 }
 
+void ThrowTracker::update_spots(
+    double t_s,
+    const std::vector<BallCandidate>& candidates,
+    double radius_px
+) {
+    // しばらく見えない場所は忘れる。
+    constexpr double kForgetAfterS = 0.5;
+    spots_.erase(
+        std::remove_if(
+            spots_.begin(),
+            spots_.end(),
+            [&](const StaticSpot& spot) { return t_s - spot.last_seen_s > kForgetAfterS; }
+        ),
+        spots_.end()
+    );
+    for (const BallCandidate& c : candidates) {
+        bool is_matched = false;
+        for (StaticSpot& spot : spots_) {
+            if (distance(c.x, c.y, spot.x, spot.y) < radius_px) {
+                spot.last_seen_s = t_s;
+                is_matched = true;
+                break;
+            }
+        }
+        if (!is_matched && spots_.size() < 64) {
+            spots_.push_back({c.x, c.y, t_s, t_s});
+        }
+    }
+}
+
+bool ThrowTracker::is_static(const BallCandidate& c, double t_s, double radius_px) const {
+    for (const StaticSpot& spot : spots_) {
+        if (distance(c.x, c.y, spot.x, spot.y) < radius_px &&
+            spot.last_seen_s - spot.first_seen_s >= config_.static_after_s &&
+            t_s - spot.last_seen_s <= 0.0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+double ThrowTracker::travel_ratio() const {
+    if (points_.size() < 2 || frame_width_ <= 0 || frame_height_ <= 0) {
+        return 0.0;
+    }
+    const auto [min_x, max_x] = std::minmax_element(
+        points_.begin(), points_.end(), [](const TrackPoint& a, const TrackPoint& b) {
+            return a.x < b.x;
+        }
+    );
+    const auto [min_y, max_y] = std::minmax_element(
+        points_.begin(), points_.end(), [](const TrackPoint& a, const TrackPoint& b) {
+            return a.y < b.y;
+        }
+    );
+    const double travel_x = (max_x->x - min_x->x) / frame_width_;
+    const double travel_y = (max_y->y - min_y->y) / frame_height_;
+    switch (config_.axis) {
+        case LaneAxis::Vertical:
+            return travel_y;
+        case LaneAxis::Horizontal:
+            return travel_x;
+        case LaneAxis::Auto:
+        default:
+            return std::max(travel_x, travel_y);
+    }
+}
+
 std::optional<ThrowResult> ThrowTracker::update(
     double t_s,
     int frame_width,
@@ -64,12 +132,9 @@ std::optional<ThrowResult> ThrowTracker::update(
     if (frame_width != frame_width_ || frame_height != frame_height_) {
         // 解像度が変わったら座標の意味が変わるので取り直す。
         reset();
+        spots_.clear();
         frame_width_ = frame_width;
         frame_height_ = frame_height;
-    }
-    if (t_s < cooldown_until_s_) {
-        reset();
-        return std::nullopt;
     }
 
     // 向き (縦・横) に左右されないよう、短い辺・長い辺を基準にする。
@@ -77,22 +142,47 @@ std::optional<ThrowResult> ThrowTracker::update(
     const double long_side = static_cast<double>(std::max(frame_width, frame_height));
     const double still_px = config_.still_ratio * short_side;
     const double step_px = config_.step_ratio * short_side;
-    const double max_jump_px = config_.max_jump_ratio * long_side;
 
-    // 追跡中なら直前の位置に近い候補、そうでなければ一番自信のある候補を使う。
+    update_spots(t_s, candidates, still_px);
+
+    if (t_s < cooldown_until_s_) {
+        reset();
+        return std::nullopt;
+    }
+
+    // 使う候補を1つ選ぶ。
+    //  - 投球中: 直前の点に一番近い候補。ただし時間に応じた距離より遠いものは別物とみなして使わない。
+    //  - 投球前: 止まっている物を除いた中で、(始点があれば) 始点に一番近い、なければ一番自信のある候補。
     const BallCandidate* ball = nullptr;
-    for (const BallCandidate& c : candidates) {
-        if (ball == nullptr) {
-            ball = &c;
-            continue;
-        }
-        if (!points_.empty()) {
-            const TrackPoint& last = points_.back();
-            if (distance(c.x, c.y, last.x, last.y) < distance(ball->x, ball->y, last.x, last.y)) {
+    if (has_moved_) {
+        const TrackPoint& last = points_.back();
+        const double elapsed = std::max(0.0, t_s - last.t_s);
+        const double gate_px =
+            config_.max_jump_ratio * long_side + config_.max_speed_ratio * long_side * elapsed;
+        double best = gate_px;
+        for (const BallCandidate& c : candidates) {
+            const double d = distance(c.x, c.y, last.x, last.y);
+            if (d <= best) {
+                best = d;
                 ball = &c;
             }
-        } else if (c.confidence > ball->confidence) {
-            ball = &c;
+        }
+    } else {
+        for (const BallCandidate& c : candidates) {
+            if (is_static(c, t_s, still_px)) {
+                continue;
+            }
+            if (ball == nullptr) {
+                ball = &c;
+            } else if (!points_.empty()) {
+                const TrackPoint& anchor = points_.front();
+                if (distance(c.x, c.y, anchor.x, anchor.y) <
+                    distance(ball->x, ball->y, anchor.x, anchor.y)) {
+                    ball = &c;
+                }
+            } else if (c.confidence > ball->confidence) {
+                ball = &c;
+            }
         }
     }
 
@@ -101,26 +191,26 @@ std::optional<ThrowResult> ThrowTracker::update(
         if (points_.empty()) {
             points_.push_back(point);
             last_change_s_ = t_s;
+        } else if (!has_moved_) {
+            const TrackPoint& anchor = points_.front();
+            const double moved = distance(point.x, point.y, anchor.x, anchor.y);
+            if (moved < still_px) {
+                // まだ投げていない (持っている・置いてある)。開始点の時刻だけ進める。
+                // (位置まで追従させると、ゆっくり転がるボールを「止まっている」と誤判定する)
+                points_.front().t_s = t_s;
+                last_change_s_ = t_s;
+            } else if (moved > config_.max_jump_ratio * long_side) {
+                // 始点から遠すぎる = 別の物。そこを新しい始点にする。
+                points_.front() = point;
+                last_change_s_ = t_s;
+            } else {
+                points_.push_back(point);
+                has_moved_ = true;
+                last_change_s_ = t_s;
+            }
         } else {
             const TrackPoint& last = points_.back();
-            const double moved = distance(point.x, point.y, last.x, last.y);
-            if (moved > max_jump_px) {
-                // 急に遠くへ飛んだ = 別の物を検出した可能性が高い。そこから取り直す。
-                reset();
-                points_.push_back(point);
-                last_change_s_ = t_s;
-            } else if (!has_moved_) {
-                if (moved < still_px) {
-                    // まだ投げていない (持っている・置いてある)。開始点の時刻だけ進める。
-                    // (位置まで追従させると、ゆっくり転がるボールを「止まっている」と誤判定する)
-                    points_.front().t_s = t_s;
-                    last_change_s_ = t_s;
-                } else {
-                    points_.push_back(point);
-                    has_moved_ = true;
-                    last_change_s_ = t_s;
-                }
-            } else if (moved >= step_px) {
+            if (distance(point.x, point.y, last.x, last.y) >= step_px) {
                 if (points_.size() < config_.max_points) {
                     points_.push_back(point);
                 }
@@ -129,7 +219,8 @@ std::optional<ThrowResult> ThrowTracker::update(
         }
     }
 
-    if (points_.empty() || t_s - last_change_s_ < config_.end_wait_s) {
+    const double idle_s = t_s - last_change_s_;
+    if (points_.empty() || idle_s < config_.end_wait_s) {
         return std::nullopt;
     }
     if (!has_moved_) {
@@ -139,10 +230,17 @@ std::optional<ThrowResult> ThrowTracker::update(
         }
         return std::nullopt;
     }
+    // レーン方向の移動がまだ足りないときは、検出が抜けているだけかもしれないので少し長く待つ。
+    if (travel_ratio() <= config_.min_travel_ratio && idle_s < config_.short_track_wait_s) {
+        return std::nullopt;
+    }
 
     ThrowResult result = finish();
     reset();
-    cooldown_until_s_ = t_s + config_.cooldown_s;
+    if (result.is_accepted) {
+        // 投球として扱わなかったときは待たずに次を受け付ける。
+        cooldown_until_s_ = t_s + config_.cooldown_s;
+    }
     return result;
 }
 
@@ -220,9 +318,8 @@ ThrowResult ThrowTracker::finish() const {
 
     double direction_x = 1.0;
     double first_position = first.x;
-    if (last.y < first.y) {
-        // 下から上へ転がった (投げる人が画面の下側)。投げる側から見た左右に合わせて反転する。
-        // 去年の Python は「投げ始めが画面の下半分か」で判定していたが、動いた向きで判定する方が確実。
+    if (first.y > height / 2.0) {
+        // 下から上へ転がった。投げる側から見た左右に合わせて反転する。
         direction_x = -1.0;
         first_position = width - first.x;
     }

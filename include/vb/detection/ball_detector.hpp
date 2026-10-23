@@ -10,6 +10,16 @@
 
 namespace detection {
 
+// YOLO の計算に使う装置。
+enum class ComputeTarget {
+    Cpu,         // CPU (既定。どの PC でも動く)
+    OpenCl,      // GPU (OpenCL)。NVIDIA / Intel / AMD のドライバーに入っている OpenCL を使う
+    OpenClFp16,  // GPU (OpenCL, 16bit 浮動小数)。対応 GPU ならさらに速いことがある
+};
+
+const char* to_string(ComputeTarget target);
+bool parse_compute_target(const std::string& text, ComputeTarget& target);
+
 struct DetectorConfig {
     std::string model_path = "models/best.onnx";
     // 学習・書き出し時の画像サイズ (2026-10-16: imgsz=640 で ONNX に書き出し)
@@ -18,6 +28,7 @@ struct DetectorConfig {
     float conf_threshold = 0.25f;
     float nms_threshold = 0.45f;
     int max_detections = 10;
+    ComputeTarget target = ComputeTarget::Cpu;
 };
 
 // YOLO (Ultralytics で ONNX に書き出した [1, 4+クラス数, 候補数] 形式) のボール検出器。
@@ -27,6 +38,13 @@ public:
     explicit BallDetector(DetectorConfig config);
 
     bool load(std::string& error_message);
+
+    // 計算に使う装置を変える。モデルを読み直して試しに1回推論するので、数秒かかることがある。
+    // 失敗したら元の装置に戻して false を返す。detect() と同じスレッドから呼ぶこと。
+    bool set_target(ComputeTarget target, std::string& message);
+    ComputeTarget target() const {
+        return config_.target;
+    }
     std::vector<Detection> detect(const cv::Mat& bgr_frame) override;
 
     const DetectorConfig& config() const {
@@ -34,11 +52,15 @@ public:
     }
 
 private:
+    // target 用にモデルを読み込んで net に入れる。
+    bool load_net(ComputeTarget target, cv::dnn::Net& net, std::string& error_message) const;
+
     DetectorConfig config_;
     cv::dnn::Net net_;
     bool is_loaded_ = false;
     bool has_warned_output_ = false;
     bool has_warned_score_ = false;
+    bool has_warned_forward_ = false;
 };
 
 }  // namespace detection

@@ -41,6 +41,7 @@ constexpr const char* kCameraSettingKey = "camera";
 // settings.ini に保存する検出方法 (yolo / cv) と OpenCV 検出の感度のキー (web_server.cpp と同じ)。
 constexpr const char* kDetectorSettingKey = "detector";
 constexpr const char* kCvThresholdSettingKey = "cv_threshold";
+constexpr const char* kComputeSettingKey = "compute";
 
 std::atomic<bool> g_stop_requested{false};
 
@@ -55,6 +56,7 @@ struct AppOptions {
     detection::MotionDetectorConfig motion;
     std::optional<detection::DetectorMode> detector_mode;  // --detector で指定したとき
     bool is_cv_threshold_explicit = false;
+    bool is_compute_explicit = false;
     trajectory::ThrowServiceConfig throws;
     // --model を明示したかどうか。明示したのに無ければ起動を止める。
     bool is_model_explicit = false;
@@ -74,6 +76,7 @@ void print_usage() {
                  "  --conf F     検出の信頼度しきい値 0.01〜0.99 (既定: 0.25)\n"
                  "  --detector M 検出方法 yolo / cv (cv は YOLO を使わず OpenCV だけ。既定: 前回の選択)\n"
                  "  --cv-threshold N  OpenCV 検出の感度 1〜255 (小さいほど敏感。既定: 30)\n"
+                 "  --compute D  YOLO の計算装置 cpu / opencl / opencl_fp16 (既定: 前回の選択、無ければ cpu)\n"
                  "  --start      起動と同時に計測を開始する (既定: Web UI の「計測開始」を待つ)\n"
                  "  --output P   Unity が読む vector.txt のパス (既定: Web UI で設定した場所)\n"
                  "  --lane-width F   レーンの横幅 [m] (既定: 5、去年と同じ)\n"
@@ -208,6 +211,12 @@ bool parse_options(
                 return false;
             }
             options.detector_mode = mode;
+        } else if (arg == "--compute") {
+            if (!has_value || !detection::parse_compute_target(argv[++i], options.detector.target)) {
+                error = "--compute には cpu / opencl / opencl_fp16 のどれかを指定してください";
+                return false;
+            }
+            options.is_compute_explicit = true;
         } else if (arg == "--cv-threshold") {
             if (!has_value || !parse_int(argv[++i], 1, 255, options.motion.diff_threshold)) {
                 error = "--cv-threshold には 1〜255 の数値を指定してください";
@@ -313,6 +322,10 @@ int main(int argc, char* argv[]) {
     // 検出器は2種類。YOLO (モデルが読めたときだけ) と、OpenCV だけの検出 (いつでも使える)。
     // モデルが無い・読めないときは OpenCV だけで動く。
     // (--model を明示したのに無い場合は、間違いに気づけるよう起動を止める)
+    // 計算装置 (CPU / OpenCL) は --compute が優先。無ければ前回 Web UI で選んだもの。
+    if (!options.is_compute_explicit) {
+        detection::parse_compute_target(throw_service.setting(kComputeSettingKey), options.detector.target);
+    }
     detection::BallDetector yolo(options.detector);
     std::string detection_message;
     std::error_code file_error;
@@ -330,7 +343,8 @@ int main(int argc, char* argv[]) {
     } else {
         is_yolo_loaded = true;
         std::cout << "[detector] loaded " << options.detector.model_path
-                  << " conf>=" << options.detector.conf_threshold << "\n";
+                  << " conf>=" << options.detector.conf_threshold
+                  << " compute=" << detection::to_string(yolo.target()) << "\n";
     }
 
     // 検出方法と OpenCV の感度は、コマンドライン > 前回 Web UI で選んだもの > 既定 (YOLO) の順。

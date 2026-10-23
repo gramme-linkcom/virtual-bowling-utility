@@ -44,8 +44,16 @@ struct TrackerConfig {
     double still_ratio = 0.03;
     // 投球中、これ以上動いたら軌跡に点を追加する (細かい揺れで点を増やさない)。
     double step_ratio = 0.01;
-    // 1回でこれ以上飛んだら別物 (誤検出) とみなし、軌跡をそこから取り直す。
+    // 追跡中、直前の点からこれより遠い候補は別物 (誤検出) とみなして使わない。
+    // 許す距離 = max_jump_ratio × 長い辺 + max_speed_ratio × 長い辺 × 前の点からの経過秒数
+    // (速いボールで検出が数フレーム抜けても、追跡が途切れないように時間に応じて広げる)。
     double max_jump_ratio = 0.35;
+    double max_speed_ratio = 4.0;
+    // 同じ場所にこの秒数以上ある候補は「止まっている物」とみなし、投球の始まりに使わない
+    // (ボールに似た置物や、ピンの誤検出に追跡が引っ張られないように)。
+    double static_after_s = 1.0;
+    // レーン方向の移動が足りない軌跡は、すぐには確定せずこの秒数まで続き (検出の抜け) を待つ。
+    double short_track_wait_s = 0.8;
     // レーンの長さ方向の移動がこれ未満なら投球として扱わない (去年の Python と同じ 0.5)。
     double min_travel_ratio = 0.5;
     // 投球を確定してから次の投球を受け付けるまでの時間。
@@ -114,6 +122,20 @@ private:
     bool has_moved_ = false;
     double last_change_s_ = 0.0;
     double cooldown_until_s_ = 0.0;
+
+    // 止まっている物の場所 (投球の始まりの候補から外す)。
+    struct StaticSpot {
+        double x = 0.0;
+        double y = 0.0;
+        double first_seen_s = 0.0;
+        double last_seen_s = 0.0;
+    };
+    std::vector<StaticSpot> spots_;
+    // 候補 c が止まっている物か (spots_ を更新したあとに呼ぶ)。
+    bool is_static(const BallCandidate& c, double t_s, double radius_px) const;
+    void update_spots(double t_s, const std::vector<BallCandidate>& candidates, double radius_px);
+    // レーン方向に動いた量 (画面の長さに対する割合)。向きの設定に合わせて縦・横を選ぶ。
+    double travel_ratio() const;
     int frame_width_ = 0;
     int frame_height_ = 0;
 };

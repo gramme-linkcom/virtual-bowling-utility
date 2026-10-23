@@ -1,5 +1,6 @@
 #include "vb/detection/ball_detector.hpp"
 
+#include <opencv2/core/ocl.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
@@ -21,20 +22,122 @@ constexpr int kBoxChannels = 4;
 
 BallDetector::BallDetector(DetectorConfig config) : config_(std::move(config)) {}
 
-bool BallDetector::load(std::string& error_message) {
+const char* to_string(ComputeTarget target) {
+    switch (target) {
+        case ComputeTarget::OpenCl:
+            return "opencl";
+        case ComputeTarget::OpenClFp16:
+            return "opencl_fp16";
+        case ComputeTarget::Cpu:
+        default:
+            return "cpu";
+    }
+}
+
+bool parse_compute_target(const std::string& text, ComputeTarget& target) {
+    if (text == "cpu") {
+        target = ComputeTarget::Cpu;
+    } else if (text == "opencl") {
+        target = ComputeTarget::OpenCl;
+    } else if (text == "opencl_fp16") {
+        target = ComputeTarget::OpenClFp16;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+bool BallDetector::load_net(ComputeTarget target, cv::dnn::Net& net, std::string& error_message)
+    const {
+    // OpenCV 5 の新しい DNN エンジンは CPU 専用なので、GPU (OpenCL) のときは従来のエンジンで読む。
+    const bool is_gpu = target != ComputeTarget::Cpu;
+    if (is_gpu) {
+        if (!cv::ocl::haveOpenCL()) {
+            error_message = "この PC では OpenCL が使えません (GPU ドライバーを確認してください)";
+            return false;
+        }
+        cv::ocl::setUseOpenCL(true);
+    }
     try {
-        net_ = cv::dnn::readNetFromONNX(config_.model_path);
+        net = cv::dnn::readNetFromONNX(
+            config_.model_path, is_gpu ? cv::dnn::ENGINE_CLASSIC : cv::dnn::ENGINE_AUTO
+        );
     } catch (const cv::Exception& e) {
         error_message = "ONNX を読み込めません (" + config_.model_path + "): " + e.what();
         return false;
     }
-    if (net_.empty()) {
+    if (net.empty()) {
         error_message = "ONNX を読み込めません (" + config_.model_path + "): 空のネットワークです";
         return false;
     }
-    net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
-    net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+    net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+    switch (target) {
+        case ComputeTarget::OpenCl:
+            net.setPreferableTarget(cv::dnn::DNN_TARGET_OPENCL);
+            break;
+        case ComputeTarget::OpenClFp16:
+            net.setPreferableTarget(cv::dnn::DNN_TARGET_OPENCL_FP16);
+            break;
+        case ComputeTarget::Cpu:
+        default:
+            net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+            break;
+    }
+    if (!is_gpu) {
+        return true;
+    }
+
+    // GPU は最初の推論で準備 (カーネルのコンパイル) が走るので、ここで1回試して失敗を拾う。
+    try {
+        const int size = config_.input_size;
+        const cv::Mat dummy(size, size, CV_8UC3, cv::Scalar(kLetterboxPadValue, kLetterboxPadValue, kLetterboxPadValue));
+        net.setInput(cv::dnn::blobFromImage(dummy, kInputScale, cv::Size(size, size), cv::Scalar(), true, false));
+        net.forward();
+    } catch (const cv::Exception& e) {
+        error_message = std::string("GPU (OpenCL) で推論できません: ") + e.what();
+        return false;
+    }
+    return true;
+}
+
+bool BallDetector::load(std::string& error_message) {
+    cv::dnn::Net net;
+    if (!load_net(config_.target, net, error_message)) {
+        if (config_.target == ComputeTarget::Cpu) {
+            return false;
+        }
+        // GPU で読めなければ CPU で読み直す (起動できないよりはまし)。
+        std::cerr << "[detector] " << error_message << "。CPU で動かします\n";
+        config_.target = ComputeTarget::Cpu;
+        if (!load_net(ComputeTarget::Cpu, net, error_message)) {
+            return false;
+        }
+    }
+    net_ = net;
     is_loaded_ = true;
+    return true;
+}
+
+bool BallDetector::set_target(ComputeTarget target, std::string& message) {
+    if (!is_loaded_) {
+        message = "モデルが読み込めていません";
+        return false;
+    }
+    if (target == config_.target) {
+        message = std::string("すでに ") + to_string(target) + " で動いています";
+        return true;
+    }
+    cv::dnn::Net net;
+    if (!load_net(target, net, message)) {
+        return false;  // 今の net_ はそのまま (元の装置で動き続ける)
+    }
+    net_ = net;
+    config_.target = target;
+    has_warned_forward_ = false;
+    message = target == ComputeTarget::Cpu ? "CPU で推論します" : "GPU (" + std::string(to_string(target)) + ") で推論します";
+    if (target != ComputeTarget::Cpu) {
+        message += " — " + cv::ocl::Device::getDefault().name();
+    }
     return true;
 }
 
@@ -64,8 +167,18 @@ std::vector<Detection> BallDetector::detect(const cv::Mat& bgr_frame) {
     const cv::Mat blob = cv::dnn::blobFromImage(
         letterboxed, kInputScale, cv::Size(size, size), cv::Scalar(), true, false
     );
-    net_.setInput(blob);
-    const cv::Mat output = net_.forward();
+    cv::Mat output;
+    try {
+        net_.setInput(blob);
+        output = net_.forward();
+    } catch (const cv::Exception& e) {
+        // 推論の失敗で検出スレッドごと落ちないようにする (GPU のドライバー不調など)。
+        if (!has_warned_forward_) {
+            std::cerr << "[detector] 推論に失敗しました: " << e.what() << "\n";
+            has_warned_forward_ = true;
+        }
+        return results;
+    }
 
     // 想定する出力は [1, 4+クラス数, 候補数] (例: [1, 5, 8400])。
     // 軸の入れ替わった [1, 候補数, 4+クラス数] も受け付ける。
