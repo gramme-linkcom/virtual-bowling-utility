@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.20)
 
 project(vb2026_utility_tools CXX)
 
+# ビルドの種類を指定しないと最適化なし (-O0) になり、自前の処理 (前処理・後処理・追跡) が遅くなる。
+# 指定がなければ Release (-O3) にする。
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "ビルドの種類" FORCE)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
