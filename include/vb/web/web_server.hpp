@@ -8,6 +8,7 @@
 
 #include <httplib.h>
 
+#include <mutex>
 #include <string>
 
 namespace web {
@@ -58,6 +59,11 @@ private:
     detection::SwitchableDetector* detector_;
     httplib::Server server_;
     UnityLink unity_;  // Web UI の「ゲーム操作」→ Unity (RemoteControl.cs) の中継
+
+    // 休止中 (管理画面の「休止」ボタン)。お客さん用画面に「休止中」を出し、その間は計測を止める。
+    std::mutex pause_mutex_;
+    bool is_paused_ = false;
+    bool was_armed_before_pause_ = false;  // 再開したら計測を元に戻すため
 };
 
 }  // namespace web

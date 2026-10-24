@@ -56,6 +56,8 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
   .gamebar button.reset { background: #c0392b; }
   .gamebar button.wall { background: #444; }
   .gamebar button.wall.active { background: #d68910; }
+  .gamebar button.pause { background: #444; }
+  .gamebar button.pause.active { background: #b9770e; }
   .gamebar .group { display: flex; gap: 6px; align-items: center; padding: 0 8px; border-left: 1px solid #33415c; }
   .gamebar .badge.ok { background: #1f9d55; }
   .gamebar .namebar { flex-basis: 100%; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
@@ -84,6 +86,9 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
   <span class="group">モード選択
     <button class="sub" id="uPrev" title="メニュー画面の ← キー">◀</button>
     <button class="sub" id="uNext" title="メニュー画面の → キー">▶</button>
+  </span>
+  <span class="group">
+    <button class="pause" id="uPause" title="お客さん用画面に「休止中」を出し、計測も止めます">⏸ 休止</button>
   </span>
   <span class="muted" id="unityMsg"></span>
   <div class="namebar" id="nameBar" hidden>
@@ -557,6 +562,24 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
   $('uPrev').addEventListener('click', () => unityCommand('mode_prev', 'モード ◀'));
   $('uNext').addEventListener('click', () => unityCommand('mode_next', 'モード ▶'));
 
+  // 休止 (お客さん用画面に「休止中」を出す。計測も止め、解除で元に戻す)
+  let paused = false;
+  function showPaused(on) {
+    paused = on;
+    $('uPause').classList.toggle('active', on);
+    $('uPause').textContent = on ? '▶ 休止を解除' : '⏸ 休止';
+  }
+  $('uPause').addEventListener('click', async () => {
+    try {
+      const d = await post('/api/pause', { on: paused ? '0' : '1' });
+      flash('unityMsg', d.message, d.ok);
+      if (d.ok) showPaused(!paused);
+    } catch (e) {
+      flash('unityMsg', '送れませんでした', false);
+    }
+    pollThrow();
+  });
+
   async function sendName() {
     const name = $('nameInput').value;
     try {
@@ -617,6 +640,7 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
       // カメラが止まっていて復帰したら、映像を取り直す。
       if (s.camera_running && !cameraRunning) cam.src = '/stream?t=' + Date.now();
       cameraRunning = s.camera_running;
+      if (s.paused !== undefined && s.paused !== paused) showPaused(s.paused);
       stat.className = 'stat' + (s.camera_running ? '' : ' bad');
       stat.textContent = s.camera_running
         ? `FPS ${s.fps.toFixed(1)} / ${s.width}x${s.height} / frame ${s.frame_id}`
@@ -742,6 +766,14 @@ const char* const kDisplayHtml = R"HTML(<!doctype html>
   .caret { display: inline-block; width: 0.06em; height: 0.95em; margin-left: 0.08em; vertical-align: -0.1em;
     background: var(--gold); animation: blink 1.2s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
+
+  /* 休止中 (管理画面の「休止」ボタン) */
+  .paused { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: rgba(8, 10, 14, 0.94); }
+  .paused[hidden] { display: none; }
+  .paused .box { text-align: center; padding: 6vh 6vw; border-radius: 2vh; background: var(--panel);
+    border: 0.15vh solid var(--line); border-top: 0.8vh solid var(--accent); }
+  .paused .t { font-size: 9vh; font-weight: bold; letter-spacing: 0.2em; }
+  .paused .s { font-size: 3vh; color: var(--sub); margin-top: 2.5vh; line-height: 1.6; }
 </style>
 </head>
 <body>
@@ -789,6 +821,12 @@ const char* const kDisplayHtml = R"HTML(<!doctype html>
         <div id="lastBody" class="none">まだ投球はありません</div>
       </div>
     </div>
+  </div>
+</div>
+<div class="paused" id="paused" hidden>
+  <div class="box">
+    <div class="t">休止中</div>
+    <div class="s">ただいま休止しています。<br>しばらくお待ちください。</div>
   </div>
 </div>
 <div class="hs" id="hs" hidden>
@@ -942,6 +980,7 @@ const char* const kDisplayHtml = R"HTML(<!doctype html>
       const s = await getJson('/api/status');
       if (s.camera_running && !cameraRunning) cam.src = '/stream?t=' + Date.now();
       cameraRunning = s.camera_running;
+      $('paused').hidden = !s.paused;
     } catch (e) { cameraRunning = false; }
     $('camWait').hidden = cameraRunning;
     const now = new Date();
@@ -1110,7 +1149,12 @@ void WebServer::register_routes() {
         json << "{\"camera_running\":" << (status.is_running ? "true" : "false")
              << ",\"fps\":" << status.fps << ",\"width\":" << status.width
              << ",\"height\":" << status.height << ",\"frame_id\":" << status.frame_id
-             << ",\"camera_index\":" << camera_.index() << "}";
+             << ",\"camera_index\":" << camera_.index();
+        {
+            std::lock_guard<std::mutex> lock(pause_mutex_);
+            json << ",\"paused\":" << (is_paused_ ? "true" : "false");
+        }
+        json << "}";
         res.set_header("Cache-Control", "no-store");
         res.set_content(json.str(), "application/json");
     });
@@ -1228,6 +1272,24 @@ void WebServer::register_routes() {
         const bool on = req.get_param_value("on") == "1";
         throws_->set_armed(on);
         send_result(res, true, on ? "計測を開始しました" : "計測を停止しました");
+    });
+
+    // 休止 (on=1/0)。休止中はお客さん用画面に「休止中」を出し、計測を止める。解除したら計測を元に戻す。
+    server_.Post("/api/pause", [this](const httplib::Request& req, httplib::Response& res) {
+        const bool on = req.get_param_value("on") == "1";
+        std::lock_guard<std::mutex> lock(pause_mutex_);
+        if (on != is_paused_) {
+            if (on) {
+                was_armed_before_pause_ = throws_ != nullptr && throws_->snapshot().is_armed;
+                if (throws_ != nullptr) {
+                    throws_->set_armed(false);
+                }
+            } else if (throws_ != nullptr && was_armed_before_pause_) {
+                throws_->set_armed(true);
+            }
+            is_paused_ = on;
+        }
+        send_result(res, true, on ? "休止中にしました (計測も止めています)" : "休止を解除しました");
     });
 
     // ---- Unity との連携 ----
