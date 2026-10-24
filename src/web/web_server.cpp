@@ -67,7 +67,8 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
 </style>
 </head>
 <body>
-<header><strong>VB2026 Utility Tools</strong></header>
+<header><strong>VB2026 Utility Tools</strong>
+  <a href="/display" target="_blank" style="float:right; color:#8ab4ff">お客さん用画面を開く ↗</a></header>
 <div class="gamebar">
   <span class="title">ゲーム操作</span>
   <span class="badge ng" id="unityBadge">Unity: 未接続</span>
@@ -547,11 +548,23 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
     try {
       const d = await post('/api/unity/name', { name });
       flash('unityMsg', d.message, d.ok);
-      if (d.ok) $('nameInput').value = '';
+      if (d.ok) { $('nameInput').value = ''; pushDraft(); }
     } catch (e) {
       flash('unityMsg', '送れませんでした', false);
     }
   }
+  // 入力中の名前をお客さん用画面へ送る (送信中にまた打たれたら、終わってから最新を送り直す)。
+  let draftBusy = false, draftDirty = false;
+  async function pushDraft() {
+    if (draftBusy) { draftDirty = true; return; }
+    draftBusy = true;
+    do {
+      draftDirty = false;
+      try { await post('/api/unity/name-draft', { name: $('nameInput').value }); } catch (e) {}
+    } while (draftDirty);
+    draftBusy = false;
+  }
+  $('nameInput').addEventListener('input', pushDraft);
   $('nameSend').addEventListener('click', sendName);
   $('nameInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) sendName(); });
 
@@ -608,6 +621,178 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
   setInterval(pollUnity, 1000);
   setInterval(pollDetections, 100);
   setInterval(pollThrow, 200);
+</script>
+</body>
+</html>
+)HTML";
+
+// お客さん用の画面 (/display)。カメラの検出の様子と、ハイスコアの名前入力だけを大きく映す。
+const char* const kDisplayHtml = R"HTML(<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>バーチャルボーリング</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; overflow: hidden;
+               font-family: "Yu Gothic UI", "Meiryo", system-ui, sans-serif; }
+  .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  .stage { position: relative; line-height: 0; }
+  .stage img { display: block; max-width: 100vw; max-height: 100vh; }
+  .stage canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+  .wait { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+          font-size: 4vh; color: #aaa; }
+  .wait[hidden] { display: none; }
+  /* ハイスコアの名前入力 (管理画面で打っている文字がそのまま出る) */
+  .name { position: fixed; left: 50%; bottom: 6vh; transform: translateX(-50%); width: min(90vw, 1400px);
+          box-sizing: border-box; padding: 3vh 4vw; border-radius: 2vh; text-align: center;
+          background: rgba(40, 30, 0, 0.88); border: 0.6vh solid #f1c40f;
+          box-shadow: 0 0 6vh rgba(241, 196, 15, 0.45); }
+  .name[hidden] { display: none; }
+  .name .head { font-size: 6vh; font-weight: bold; color: #f1c40f; line-height: 1.2; }
+  .name .score { font-size: 4vh; margin-top: 0.5vh; }
+  .name .label { font-size: 3vh; color: #ddd; margin-top: 2vh; }
+  .name .value { font-size: 8vh; font-weight: bold; line-height: 1.3; min-height: 1.3em; word-break: break-all; }
+  .name .value.empty { color: #bbb; font-size: 5vh; font-weight: normal; }
+  .caret { display: inline-block; width: 0.08em; height: 1em; margin-left: 0.08em; vertical-align: -0.12em;
+           background: #f1c40f; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+<div class="screen"><div class="stage"><img id="cam" src="/stream" alt=""><canvas id="overlay"></canvas></div></div>
+<div class="wait" id="wait" hidden>カメラを準備しています...</div>
+<div class="name" id="nameBox" hidden>
+  <div class="head">🏆 ハイスコア！</div>
+  <div class="score" id="score"></div>
+  <div class="label">なまえ</div>
+  <div class="value" id="nameValue"></div>
+</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const cam = $('cam');
+  const overlay = $('overlay');
+  let detData = null;
+  let throwData = null;
+
+  function drawPath(ctx, points, sx, sy, color, width) {
+    if (!points || points.length < 2) return;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    points.forEach((p, i) => {
+      if (i === 0) ctx.moveTo(p[0] * sx, p[1] * sy); else ctx.lineTo(p[0] * sx, p[1] * sy);
+    });
+    ctx.stroke();
+  }
+
+  // 管理画面と同じ判定 (範囲内かつ登録した大きさに近い検出だけを使う)。
+  function isUsable(b, fw, fh) {
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    const t = throwData;
+    if (t && t.roi) {
+      if (cx < t.roi.x0 * fw || cx >= t.roi.x1 * fw || cy < t.roi.y0 * fh || cy >= t.roi.y1 * fh) return false;
+    }
+    if (t && t.ball_size) {
+      const size = (b.w + b.h) / 2, expected = t.ball_size * fh;
+      if (size < expected * 0.5 || size > expected * 1.5) return false;
+    }
+    return true;
+  }
+
+  function render() {
+    const W = cam.clientWidth, H = cam.clientHeight;
+    if (overlay.width !== W) overlay.width = W;
+    if (overlay.height !== H) overlay.height = H;
+    const ctx = overlay.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+    const base = Math.max(3, Math.min(W, H) / 120);
+
+    // 検出範囲の外を少し暗くする
+    const t = throwData;
+    const roi = t && t.roi;
+    if (roi) {
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(0, 0, W, roi.y0 * H);
+      ctx.fillRect(0, roi.y1 * H, W, H - roi.y1 * H);
+      ctx.fillRect(0, roi.y0 * H, roi.x0 * W, (roi.y1 - roi.y0) * H);
+      ctx.fillRect(roi.x1 * W, roi.y0 * H, W - roi.x1 * W, (roi.y1 - roi.y0) * H);
+    }
+
+    // 軌跡: 前回の投球 (水色) と追跡中 (黄色)
+    if (t && t.enabled && t.frame_width) {
+      const sx = W / t.frame_width, sy = H / t.frame_height;
+      if (t.last && !t.last.is_test && t.last.accepted) drawPath(ctx, t.last.points, sx, sy, 'rgba(51,204,255,0.8)', base);
+      drawPath(ctx, t.tracking_points, sx, sy, '#ffd400', base * 1.4);
+    }
+
+    // ボール: 使っている検出だけ丸で囲む
+    const d = detData;
+    if (d && d.enabled && d.frame_width) {
+      const sx = W / d.frame_width, sy = H / d.frame_height;
+      ctx.strokeStyle = '#00ff66';
+      ctx.lineWidth = base;
+      for (const b of d.detections) {
+        if (!isUsable(b, d.frame_width, d.frame_height)) continue;
+        const r = Math.max(b.w * sx, b.h * sy) / 2 + base * 2;
+        ctx.beginPath();
+        ctx.arc((b.x + b.w / 2) * sx, (b.y + b.h / 2) * sy, r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+  }
+
+  async function getJson(url) {
+    const r = await fetch(url, { cache: 'no-store' });
+    return r.json();
+  }
+  async function pollDetections() {
+    try { detData = await getJson('/api/detections'); } catch (e) { detData = null; }
+    render();
+  }
+  async function pollThrow() {
+    try { throwData = await getJson('/api/throw'); } catch (e) { throwData = null; }
+  }
+
+  let cameraRunning = true;
+  async function pollStatus() {
+    try {
+      const s = await getJson('/api/status');
+      if (s.camera_running && !cameraRunning) cam.src = '/stream?t=' + Date.now();
+      cameraRunning = s.camera_running;
+      $('wait').hidden = s.camera_running;
+    } catch (e) {
+      $('wait').hidden = false;
+    }
+  }
+
+  async function pollUnity() {
+    try {
+      const u = await getJson('/api/unity/status');
+      const show = u.connected && u.name_input;
+      $('nameBox').hidden = !show;
+      if (!show) return;
+      $('score').textContent = u.score >= 0 ? `スコア ${u.score}` : '';
+      const value = $('nameValue');
+      const name = u.name_draft || '';
+      value.textContent = name || 'なまえを入力しています';
+      value.className = 'value' + (name ? '' : ' empty');
+      const caret = document.createElement('span');
+      caret.className = 'caret';
+      value.appendChild(caret);
+    } catch (e) {
+      $('nameBox').hidden = true;
+    }
+  }
+
+  window.addEventListener('resize', render);
+  pollStatus();
+  setInterval(pollStatus, 1000);
+  setInterval(pollDetections, 100);
+  setInterval(pollThrow, 200);
+  setInterval(pollUnity, 200);
 </script>
 </body>
 </html>
@@ -720,6 +905,10 @@ bool WebServer::require_throws(httplib::Response& res) const {
 void WebServer::register_routes() {
     server_.Get("/", [](const httplib::Request&, httplib::Response& res) {
         res.set_content(kIndexHtml, "text/html; charset=utf-8");
+    });
+
+    server_.Get("/display", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(kDisplayHtml, "text/html; charset=utf-8");
     });
 
     server_.Get("/api/status", [this](const httplib::Request&, httplib::Response& res) {
@@ -915,6 +1104,12 @@ void WebServer::register_routes() {
         send_result(res, true, "名前を送りました");
     });
 
+    // 管理画面で入力中の名前 (name=...)。お客さん用画面に同じ文字を出すだけで、Unity には送らない。
+    server_.Post("/api/unity/name-draft", [this](const httplib::Request& req, httplib::Response& res) {
+        unity_.set_name_draft(req.get_param_value("name"));
+        send_result(res, true, "");
+    });
+
     server_.Get("/api/unity/status", [this](const httplib::Request&, httplib::Response& res) {
         const UnityStatus s = unity_.status();
         std::ostringstream json;
@@ -923,7 +1118,8 @@ void WebServer::register_routes() {
              << "\",\"gutter_wall\":"
              << (s.is_gutter_wall ? (*s.is_gutter_wall ? "true" : "false") : "null")
              << ",\"name_input\":" << (s.is_waiting_name ? "true" : "false")
-             << ",\"score\":" << s.score << ",\"last_seen_ms\":" << s.last_seen_ms << "}";
+             << ",\"score\":" << s.score << ",\"name_draft\":\"" << json_escape(s.name_draft)
+             << "\",\"last_seen_ms\":" << s.last_seen_ms << "}";
         res.set_header("Cache-Control", "no-store");
         res.set_content(json.str(), "application/json");
     });

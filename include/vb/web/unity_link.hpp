@@ -17,6 +17,7 @@ struct UnityStatus {
     std::optional<bool> is_gutter_wall;  // ガーターの壁が上がっているか (分からなければ無し)
     bool is_waiting_name = false;        // ハイスコアの名前入力欄が出ているか
     int score = -1;                      // 今のスコア (分からなければ -1)
+    std::string name_draft;              // 管理画面で入力中の名前 (お客さん用画面に映す)
     long long last_seen_ms = -1;         // 最後の連絡から何ミリ秒たったか
 };
 
@@ -31,6 +32,9 @@ public:
     static bool make_name_command(const std::string& name, std::string& command, std::string& error);
 
     void push(const std::string& command);
+
+    // 管理画面で入力中の名前 (決定前)。お客さん用画面 (/display) に同じ文字を出すため。
+    void set_name_draft(const std::string& text);
 
     // Unity から呼ばれる。状態を記録し、たまっている命令を渡して空にする。
     std::vector<std::string> poll(
@@ -58,6 +62,7 @@ private:
     std::optional<bool> is_gutter_wall_;
     bool is_waiting_name_ = false;
     int score_ = -1;
+    std::string name_draft_;
 };
 
 }  // namespace web

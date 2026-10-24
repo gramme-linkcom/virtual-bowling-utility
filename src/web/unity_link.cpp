@@ -59,6 +59,28 @@ bool UnityLink::make_name_command(
     return true;
 }
 
+void UnityLink::set_name_draft(const std::string& text) {
+    // 制御文字は消し、長すぎる分は UTF-8 の文字の途中で切らないように落とす。
+    constexpr std::size_t kMaxDraftBytes = 90;
+    std::string cleaned;
+    for (const char c : text) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (u < 0x20 || u == 0x7f) {
+            continue;
+        }
+        cleaned += c;
+    }
+    if (cleaned.size() > kMaxDraftBytes) {
+        std::size_t end = kMaxDraftBytes;
+        while (end > 0 && (static_cast<unsigned char>(cleaned[end]) & 0xC0) == 0x80) {
+            --end;
+        }
+        cleaned.resize(end);
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    name_draft_ = cleaned;
+}
+
 void UnityLink::push(const std::string& command) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (pending_.size() >= kMaxPending) {
@@ -80,6 +102,10 @@ std::vector<std::string> UnityLink::poll(
     scene_ = scene;
     state_ = state;
     is_gutter_wall_ = is_gutter_wall;
+    if (is_waiting_name_ && !is_waiting_name) {
+        // 名前入力が終わったら、入力中の名前も消す (次のハイスコアに残さない)。
+        name_draft_.clear();
+    }
     is_waiting_name_ = is_waiting_name;
     score_ = score;
 
@@ -107,6 +133,7 @@ UnityStatus UnityLink::status() const {
     status.is_gutter_wall = is_gutter_wall_;
     status.is_waiting_name = is_waiting_name_;
     status.score = score_;
+    status.name_draft = name_draft_;
     return status;
 }
 
