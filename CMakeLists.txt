@@ -37,6 +37,7 @@ add_executable(vb2026_utility_tools
     src/main.cpp
     src/camera/camera_stream.cpp
     src/detection/ball_detector.cpp
+    src/detection/dataset_recorder.cpp
     src/detection/detection_worker.cpp
     src/detection/motion_detector.cpp
     src/detection/switchable_detector.cpp

@@ -25,6 +25,10 @@ void DetectionWorker::set_result_callback(ResultCallback callback) {
     on_result_ = std::move(callback);
 }
 
+void DetectionWorker::set_frame_callback(FrameCallback callback) {
+    on_frame_ = std::move(callback);
+}
+
 void DetectionWorker::start() {
     if (is_running_) {
         return;
@@ -85,6 +89,9 @@ void DetectionWorker::run() {
         // ロックの外で呼ぶ (Web サーバーが latest() で待たされないように)。
         if (on_result_) {
             on_result_(result);
+        }
+        if (on_frame_) {
+            on_frame_(frame, result);
         }
     }
 }

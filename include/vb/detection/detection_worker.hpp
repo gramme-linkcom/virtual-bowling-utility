@@ -34,6 +34,10 @@ public:
     // 1フレーム検出するたびに (検出スレッドから) 呼ばれる。start() より前に設定すること。
     using ResultCallback = std::function<void(const DetectionResult&)>;
     void set_result_callback(ResultCallback callback);
+    // 結果と一緒に、検出に使ったフレームも渡す (学習用の画像保存など)。結果のコールバックの後に呼ばれる。
+    // frame は次のフレームで上書きされるので、残すならコピーすること。start() より前に設定すること。
+    using FrameCallback = std::function<void(const cv::Mat& frame, const DetectionResult&)>;
+    void set_frame_callback(FrameCallback callback);
 
     void start();
     void stop();
@@ -48,6 +52,7 @@ private:
     std::thread thread_;
     std::atomic<bool> is_running_{false};
     ResultCallback on_result_;
+    FrameCallback on_frame_;
 
     mutable std::mutex mutex_;
     DetectionResult latest_;

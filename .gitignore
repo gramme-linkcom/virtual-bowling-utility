@@ -6,3 +6,6 @@ toolchain-ucrt64
 
 
 settings.ini
+
+# 学習用に保存した画像 (大きいので Git に入れない)
+dataset

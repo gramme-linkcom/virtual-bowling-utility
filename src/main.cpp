@@ -1,5 +1,6 @@
 #include "vb/camera/camera_stream.hpp"
 #include "vb/detection/ball_detector.hpp"
+#include "vb/detection/dataset_recorder.hpp"
 #include "vb/detection/detection_worker.hpp"
 #include "vb/detection/motion_detector.hpp"
 #include "vb/detection/switchable_detector.hpp"
@@ -363,6 +364,10 @@ int main(int argc, char* argv[]) {
               << (detector.mode() == detection::DetectorMode::Yolo ? "YOLO" : "OpenCV だけ")
               << "\n";
 
+    // 来年の学習用に、認識した画像を保存する (管理画面の「データセット保存」で ON/OFF)。
+    detection::DatasetRecorder dataset_recorder("dataset");
+    dataset_recorder.set_enabled(throw_service.setting("dataset_record") == "1");
+
     auto detection_worker = std::make_unique<detection::DetectionWorker>(camera, detector);
     detection_worker->set_result_callback([&throw_service](const detection::DetectionResult& r) {
         std::vector<trajectory::BallCandidate> candidates;
@@ -377,6 +382,20 @@ int main(int argc, char* argv[]) {
         }
         throw_service.on_frame(r.timestamp_s, r.frame_width, r.frame_height, candidates);
     });
+    detection_worker->set_frame_callback(
+        [&dataset_recorder, &throw_service, &detector](const cv::Mat& frame, const detection::DetectionResult& r) {
+            if (!dataset_recorder.is_enabled()) {
+                return;
+            }
+            dataset_recorder.submit(
+                frame,
+                r.frame_id,
+                r.detections,
+                throw_service.snapshot().is_tracking,
+                detection::to_string(detector.mode())
+            );
+        }
+    );
     detection_worker->start();
 
     web::WebServer server(
@@ -387,6 +406,7 @@ int main(int argc, char* argv[]) {
         &throw_service,
         &detector
     );
+    server.set_dataset_recorder(&dataset_recorder);
     if (!server.bind(error)) {
         std::cerr << "[error][web] " << error << "\n";
         return 1;

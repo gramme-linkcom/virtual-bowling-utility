@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vb/camera/camera_stream.hpp"
+#include "vb/detection/dataset_recorder.hpp"
 #include "vb/detection/detection_worker.hpp"
 #include "vb/detection/switchable_detector.hpp"
 #include "vb/trajectory/throw_service.hpp"
@@ -42,6 +43,11 @@ public:
     void run();
     void stop();
 
+    // 学習用の画像保存 (管理画面の「データセット保存」)。run() より前に設定する。
+    void set_dataset_recorder(detection::DatasetRecorder* recorder) {
+        dataset_ = recorder;
+    }
+
     const WebConfig& config() const {
         return config_;
     }
@@ -68,6 +74,8 @@ private:
     // Unity でボールを出す位置 (管理画面の「Unity 連携」)。Unity (RemoteControl.cs) が問い合わせのたびに受け取る。
     //   use_throw_position_ … true: カメラで取った投げ始めの位置から出す / false: いつもレーンの真ん中から
     //   invert_throw_position_ … 左右を反転する
+    detection::DatasetRecorder* dataset_ = nullptr;
+
     std::mutex position_mutex_;
     bool use_throw_position_ = true;
     bool invert_throw_position_ = false;

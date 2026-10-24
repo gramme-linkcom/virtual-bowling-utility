@@ -130,6 +130,16 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
   </section>
 
   <section class="panel">
+    <h2>データセット保存 (来年の学習用)</h2>
+    <div class="row">
+      <label style="font-size:16px"><input type="checkbox" id="dsChk" style="width:auto"> 認識した画像を保存する</label>
+      <span id="dsStat" class="muted"></span>
+    </div>
+    <div class="muted">投球を追っている間は毎フレーム (最大 15 枚/秒、ボールを見失ったフレームも)、それ以外はボールが写ったときだけ 5 秒に1枚、
+      カメラ画像 (images/*.jpg) と検出結果 (labels/*.txt、YOLO 形式) を保存します。空き容量が 2 GB を切ると自動で止まります。</div>
+  </section>
+
+  <section class="panel">
     <h2>検出方法・検出範囲・ボール</h2>
     <div class="row">
       検出方法
@@ -646,6 +656,32 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
       badge.textContent = 'ツールに接続できません';
     }
   }
+
+  // ---- データセット保存 ----
+  $('dsChk').addEventListener('change', async () => {
+    try {
+      const d = await post('/api/dataset', { on: $('dsChk').checked ? '1' : '0' });
+      flash('dsStat', d.message, d.ok);
+    } catch (e) {
+      flash('dsStat', '送れませんでした', false);
+    }
+  });
+  async function pollDataset() {
+    try {
+      const r = await fetch('/api/dataset', { cache: 'no-store' });
+      const d = await r.json();
+      if (!d.available) { $('dsChk').disabled = true; return; }
+      if (document.activeElement !== $('dsChk')) $('dsChk').checked = d.enabled;
+      if ($('dsStat').dataset.recent) return;
+      let text = `保存 ${d.saved} 枚` + (d.dropped ? ` (間に合わず ${d.dropped} 枚スキップ)` : '') +
+        (d.free_gb >= 0 ? ` / 空き ${d.free_gb.toFixed(1)} GB` : '') + ` / ${d.folder}`;
+      if (d.message) text += ' — ' + d.message;
+      $('dsStat').className = d.message ? 'bad' : 'muted';
+      $('dsStat').textContent = text;
+    } catch (e) {}
+  }
+  pollDataset();
+  setInterval(pollDataset, 1000);
 
   async function pollStatus() {
     const stat = $('stat');
@@ -1296,6 +1332,36 @@ void WebServer::register_routes() {
         const bool on = req.get_param_value("on") == "1";
         throws_->set_armed(on);
         send_result(res, true, on ? "計測を開始しました" : "計測を停止しました");
+    });
+
+    // 学習用の画像保存 (データセット)。
+    server_.Get("/api/dataset", [this](const httplib::Request&, httplib::Response& res) {
+        res.set_header("Cache-Control", "no-store");
+        if (dataset_ == nullptr) {
+            res.set_content("{\"available\":false}", "application/json");
+            return;
+        }
+        const detection::DatasetRecorder::Status s = dataset_->status();
+        std::ostringstream json;
+        json << "{\"available\":true,\"enabled\":" << (s.is_enabled ? "true" : "false")
+             << ",\"saved\":" << s.saved << ",\"dropped\":" << s.dropped
+             << ",\"free_gb\":" << s.free_gb << ",\"folder\":\"" << json_escape(s.folder)
+             << "\",\"message\":\"" << json_escape(s.message) << "\"}";
+        res.set_content(json.str(), "application/json");
+    });
+
+    // 学習用の画像保存の ON/OFF (on=1/0)。settings.ini に保存する。
+    server_.Post("/api/dataset", [this](const httplib::Request& req, httplib::Response& res) {
+        if (dataset_ == nullptr) {
+            send_result(res, false, "画像の保存は使えません");
+            return;
+        }
+        const bool on = req.get_param_value("on") == "1";
+        dataset_->set_enabled(on);
+        if (throws_ != nullptr) {
+            throws_->set_setting("dataset_record", on ? "1" : "0");
+        }
+        send_result(res, true, on ? "画像の保存を始めました" : "画像の保存を止めました");
     });
 
     // Unity でボールを出す位置 (use=1: カメラの位置 / 0: いつも真ん中、invert=1/0)。settings.ini に保存する。
