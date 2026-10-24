@@ -180,6 +180,16 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
 
   <section class="panel">
     <h2>Unity 連携 (vector.txt)</h2>
+    <div class="row">
+      ボールを出す位置
+      <select id="posSel">
+        <option value="1">カメラで取った投げ始めの位置</option>
+        <option value="0">いつもレーンの真ん中 (元の動き)</option>
+      </select>
+      <label><input type="checkbox" id="posInv" style="width:auto"> 左右反転</label>
+      <span id="posMsg" class="muted"></span>
+    </div>
+    <div class="muted">Unity を作り直さずに切り替えられます (次の投球から)。Unity でボールが逆の端から出るときは「左右反転」を入れてください。</div>
     <div class="muted" id="throwOut">出力先: -</div>
     <div class="row">
       出力先 <input id="outPath" type="text" style="flex:1; min-width:240px; width:auto"
@@ -580,6 +590,11 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
     pollThrow();
   });
 
+  const sendPosition = () => action('/api/unity/position',
+    { use: $('posSel').value, invert: $('posInv').checked ? '1' : '0' }, 'posMsg');
+  $('posSel').addEventListener('change', sendPosition);
+  $('posInv').addEventListener('change', sendPosition);
+
   async function sendName() {
     const name = $('nameInput').value;
     try {
@@ -614,6 +629,10 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
       const names = { StartMenu: 'スタート画面', Playing: 'プレイ中', Menu: 'メニュー画面' };
       badge.className = 'badge ' + (u.connected ? 'ok' : 'ng');
       badge.textContent = u.connected ? 'Unity: ' + (names[u.state] || u.state || '接続中') : 'Unity: 未接続';
+      if (u.use_position !== undefined && document.activeElement !== $('posSel')) {
+        $('posSel').value = u.use_position ? '1' : '0';
+        $('posInv').checked = u.invert_position;
+      }
       $('uWallOn').classList.toggle('active', u.gutter_wall === true);
       $('uWallOff').classList.toggle('active', u.gutter_wall === false);
       // ハイスコアの名前入力欄が Unity に出ている間だけ、入力欄を出す
@@ -1104,6 +1123,11 @@ WebServer::WebServer(
       detection_message_(std::move(detection_message)),
       throws_(throws),
       detector_(detector) {
+    if (throws_ != nullptr) {
+        // 前回の設定 (settings.ini) を読む。無ければ「カメラの位置を使う・反転なし」。
+        use_throw_position_ = throws_->setting("unity_use_position") != "0";
+        invert_throw_position_ = throws_->setting("unity_invert_position") == "1";
+    }
     register_routes();
 }
 
@@ -1274,6 +1298,26 @@ void WebServer::register_routes() {
         send_result(res, true, on ? "計測を開始しました" : "計測を停止しました");
     });
 
+    // Unity でボールを出す位置 (use=1: カメラの位置 / 0: いつも真ん中、invert=1/0)。settings.ini に保存する。
+    server_.Post("/api/unity/position", [this](const httplib::Request& req, httplib::Response& res) {
+        const bool use = req.get_param_value("use") == "1";
+        const bool invert = req.get_param_value("invert") == "1";
+        {
+            std::lock_guard<std::mutex> lock(position_mutex_);
+            use_throw_position_ = use;
+            invert_throw_position_ = invert;
+        }
+        if (throws_ != nullptr) {
+            throws_->set_setting("unity_use_position", use ? "1" : "0");
+            throws_->set_setting("unity_invert_position", invert ? "1" : "0");
+        }
+        std::string message = use ? "カメラで取った位置から出します" : "いつもレーンの真ん中から出します";
+        if (invert) {
+            message += " (左右反転)";
+        }
+        send_result(res, true, message);
+    });
+
     // 休止 (on=1/0)。休止中はお客さん用画面に「休止中」を出し、計測を止める。解除したら計測を元に戻す。
     server_.Post("/api/pause", [this](const httplib::Request& req, httplib::Response& res) {
         const bool on = req.get_param_value("on") == "1";
@@ -1322,7 +1366,13 @@ void WebServer::register_routes() {
         {
             // 休止中なら Unity の画面にも「休止中」を出す (RemoteControl.cs)
             std::lock_guard<std::mutex> lock(pause_mutex_);
-            json += is_paused_ ? ",\"paused\":true}" : ",\"paused\":false}";
+            json += is_paused_ ? ",\"paused\":true" : ",\"paused\":false";
+        }
+        {
+            // ボールを出す位置の設定 (RemoteControl.cs → GameContoller.cs)。1/0 で渡す。
+            std::lock_guard<std::mutex> lock(position_mutex_);
+            json += std::string(",\"position_mode\":") + (use_throw_position_ ? "1" : "0") +
+                    ",\"position_invert\":" + (invert_throw_position_ ? "1" : "0") + "}";
         }
         res.set_header("Cache-Control", "no-store");
         res.set_content(json, "application/json");
@@ -1379,7 +1429,13 @@ void WebServer::register_routes() {
              << (s.is_gutter_wall ? (*s.is_gutter_wall ? "true" : "false") : "null")
              << ",\"name_input\":" << (s.is_waiting_name ? "true" : "false")
              << ",\"score\":" << s.score << ",\"name_draft\":\"" << json_escape(s.name_draft)
-             << "\",\"last_seen_ms\":" << s.last_seen_ms << "}";
+             << "\",\"last_seen_ms\":" << s.last_seen_ms;
+        {
+            std::lock_guard<std::mutex> lock(position_mutex_);
+            json << ",\"use_position\":" << (use_throw_position_ ? "true" : "false")
+                 << ",\"invert_position\":" << (invert_throw_position_ ? "true" : "false");
+        }
+        json << "}";
         res.set_header("Cache-Control", "no-store");
         res.set_content(json.str(), "application/json");
     });

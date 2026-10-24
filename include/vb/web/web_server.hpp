@@ -64,6 +64,13 @@ private:
     std::mutex pause_mutex_;
     bool is_paused_ = false;
     bool was_armed_before_pause_ = false;  // 再開したら計測を元に戻すため
+
+    // Unity でボールを出す位置 (管理画面の「Unity 連携」)。Unity (RemoteControl.cs) が問い合わせのたびに受け取る。
+    //   use_throw_position_ … true: カメラで取った投げ始めの位置から出す / false: いつもレーンの真ん中から
+    //   invert_throw_position_ … 左右を反転する
+    std::mutex position_mutex_;
+    bool use_throw_position_ = true;
+    bool invert_throw_position_ = false;
 };
 
 }  // namespace web
