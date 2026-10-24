@@ -1318,7 +1318,12 @@ void WebServer::register_routes() {
         for (std::size_t i = 0; i < commands.size(); ++i) {
             json += (i == 0 ? "\"" : ",\"") + json_escape(commands[i]) + "\"";
         }
-        json += "]}";
+        json += "]";
+        {
+            // 休止中なら Unity の画面にも「休止中」を出す (RemoteControl.cs)
+            std::lock_guard<std::mutex> lock(pause_mutex_);
+            json += is_paused_ ? ",\"paused\":true}" : ",\"paused\":false}";
+        }
         res.set_header("Cache-Control", "no-store");
         res.set_content(json, "application/json");
     });
