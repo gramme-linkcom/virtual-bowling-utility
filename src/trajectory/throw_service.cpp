@@ -243,7 +243,12 @@ void ThrowService::on_frame(
     }
 
     if (!result->is_accepted) {
-        record.message = "投球として扱いませんでした: " + result->reject_reason;
+        if (result->reject_reason.find("短すぎます") != std::string::npos) {
+            // 速すぎて途中の検出が取れず、軌跡が短くなったときによく出る。投げた人に伝わる言い方にする。
+            record.message = "早すぎます！少しゆっくり投げてください！ (" + result->reject_reason + ")";
+        } else {
+            record.message = "投球として扱いませんでした: " + result->reject_reason;
+        }
         std::cout << "[throw] #" << record.id << " " << record.message << "\n";
         last_ = std::move(record);
         return;

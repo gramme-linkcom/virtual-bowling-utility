@@ -64,6 +64,9 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
   .gamebar .namebar input { font-size: 18px; padding: 8px; width: 260px; background: #000; color: #fff;
                             border: 1px solid #f1c40f; border-radius: 4px; }
   .gamebar .badge.ng { background: #7f2a2a; }
+  .alert { background: #7a4b00; border: 2px solid #f39c12; color: #fff; font-size: 20px; font-weight: bold;
+           padding: 10px 14px; border-radius: 6px; }
+  .alert[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -117,6 +120,7 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
     </div>
     <div class="stat" id="throwTrack">-</div>
     <div class="stat" id="throwLast">まだ投球はありません</div>
+    <div class="alert" id="fastAlert" hidden>⚠ 早すぎます！少しゆっくり投げてください！</div>
     <div class="muted">黄: 追跡中の軌跡 / 水色: 前回の投球 / 赤: 投球として扱わなかった動き / 灰色の枠: 範囲外・大きさ違いで無視した検出</div>
   </section>
 
@@ -333,6 +337,7 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
     render();
   }
 
+  let lastAlertId = null, fastAlertTimer = null;
   async function pollThrow() {
     try {
       const r = await fetch('/api/throw', { cache: 'no-store' });
@@ -368,6 +373,15 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
       const last = $('throwLast');
       if (t.last) {
         const l = t.last;
+        // 速すぎて投球として扱わなかったときは、目立つ注意をしばらく出す。
+        if (lastAlertId !== null && l.id !== lastAlertId && !l.accepted && l.message.startsWith('早すぎます')) {
+          $('fastAlert').hidden = false;
+          clearTimeout(fastAlertTimer);
+          fastAlertTimer = setTimeout(() => { $('fastAlert').hidden = true; }, 6000);
+        } else if (l.accepted && l.id !== lastAlertId) {
+          $('fastAlert').hidden = true;
+        }
+        lastAlertId = l.id;
         const head = `#${l.id}${l.is_test ? ' (テスト)' : ''} `;
         last.className = 'stat ' + (l.accepted && l.written ? 'ok' : 'bad');
         last.textContent = l.accepted
@@ -635,107 +649,99 @@ const char* const kDisplayHtml = R"HTML(<!doctype html>
 <title>バーチャルボーリング</title>
 <style>
   :root {
-    --bg: #070b1a; --panel: rgba(18, 26, 56, 0.82); --line: rgba(120, 160, 255, 0.25);
-    --pink: #ff3fa4; --cyan: #2de2ff; --gold: #ffd23f; --text: #f4f6ff; --sub: #a9b4d6;
+    --bg: #0e1218; --panel: #161b24; --line: #262e3b; --accent: #5aa9e6; --gold: #d9b45a;
+    --text: #e8ecf2; --sub: #8a94a6;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; overflow: hidden; color: var(--text);
-    font-family: "BIZ UDPGothic", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
-    background: radial-gradient(ellipse at 20% -10%, #24206b 0%, transparent 55%),
-                radial-gradient(ellipse at 110% 110%, #4a1240 0%, transparent 50%), var(--bg); }
-  .app { position: fixed; inset: 0; display: grid; grid-template-rows: 13vh 1fr; gap: 2vh; padding: 2.5vh 2.5vw; }
+  html, body { margin: 0; height: 100%; overflow: hidden; color: var(--text); background: var(--bg);
+    font-family: "BIZ UDPGothic", "Yu Gothic UI", "Meiryo", system-ui, sans-serif; }
+  .app { position: fixed; inset: 0; display: grid; grid-template-rows: 11vh 1fr; gap: 2vh; padding: 2.5vh 2.5vw; }
 
   /* ヘッダー */
-  header { display: flex; align-items: center; justify-content: space-between; }
-  .brand { display: flex; align-items: center; gap: 1.6vw; }
-  .logo { width: 9vh; height: 9vh; border-radius: 50%; position: relative;
-    background: radial-gradient(circle at 35% 30%, #6b8bff, #1b2a8f 60%, #0a0f3a);
-    box-shadow: 0 0 3vh rgba(45, 226, 255, 0.45); }
-  .logo i { position: absolute; width: 1.3vh; height: 1.3vh; border-radius: 50%; background: #0a0f2a; }
-  .logo i:nth-child(1) { left: 3.2vh; top: 2.4vh; } .logo i:nth-child(2) { left: 4.9vh; top: 2.2vh; }
-  .logo i:nth-child(3) { left: 4.3vh; top: 3.9vh; }
-  .title small { display: block; font-size: 2.2vh; letter-spacing: 0.6em; color: var(--cyan); font-weight: bold; }
-  .title h1 { margin: 0.4vh 0 0; font-size: 6.4vh; line-height: 1; letter-spacing: 0.06em;
-    background: linear-gradient(90deg, #fff 0%, #ffd9f0 40%, var(--pink) 100%);
-    -webkit-background-clip: text; background-clip: text; color: transparent;
-    filter: drop-shadow(0 0 1.2vh rgba(255, 63, 164, 0.45)); }
-  .clock { font-size: 5vh; font-weight: bold; font-variant-numeric: tabular-nums; color: var(--sub); }
+  header { display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 0.2vh solid var(--line); padding-bottom: 1.5vh; }
+  .brand { display: flex; align-items: center; gap: 1.4vw; }
+  .logo { width: 6.5vh; height: 6.5vh; border-radius: 50%; position: relative; background: #2b3a55; }
+  .logo i { position: absolute; width: 1vh; height: 1vh; border-radius: 50%; background: var(--bg); }
+  .logo i:nth-child(1) { left: 2.3vh; top: 1.7vh; } .logo i:nth-child(2) { left: 3.6vh; top: 1.6vh; }
+  .logo i:nth-child(3) { left: 3.1vh; top: 2.8vh; }
+  .title small { display: block; font-size: 1.7vh; letter-spacing: 0.3em; color: var(--sub); }
+  .title h1 { margin: 0.3vh 0 0; font-size: 5vh; line-height: 1.1; font-weight: bold; letter-spacing: 0.04em; color: var(--text); }
+  .clock { font-size: 4vh; font-variant-numeric: tabular-nums; color: var(--sub); }
 
   .main { display: grid; grid-template-columns: 1fr 30vw; gap: 2vw; min-height: 0; }
+  .left { display: flex; flex-direction: column; gap: 1.6vh; min-height: 0; }
+  .left .camera { flex: 1; }
+  .legend { display: flex; flex-wrap: wrap; gap: 1vh 2vw; align-items: center; padding: 1.3vh 1.6vw;
+    background: var(--panel); border: 0.15vh solid var(--line); border-radius: 1.2vh; font-size: 2.1vh; color: var(--sub); }
+  .legend span { display: inline-flex; align-items: center; gap: 0.7vw; white-space: nowrap; }
+  .legend .ln { width: 3.4vh; height: 0.5vh; border-radius: 0.25vh; }
+  .legend .bx { width: 2.2vh; height: 2.2vh; border: 0.3vh solid; }
 
   /* カメラ */
-  .camera { position: relative; border-radius: 2.4vh; background: #000; overflow: hidden; min-height: 0;
-    border: 0.35vh solid var(--line); box-shadow: 0 0 5vh rgba(45, 226, 255, 0.12) inset, 0 2vh 6vh rgba(0,0,0,0.5); }
+  .camera { position: relative; border-radius: 1.2vh; background: #000; overflow: hidden; min-height: 0;
+    border: 0.15vh solid var(--line); }
   .camwrap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
   .stage { position: relative; line-height: 0; }
   .stage img { display: block; }
   .stage canvas { position: absolute; left: 0; top: 0; pointer-events: none; }
-  .live { position: absolute; left: 2vh; top: 2vh; z-index: 2; display: flex; align-items: center; gap: 1vh;
-    padding: 0.8vh 1.6vh; border-radius: 99px; background: rgba(0,0,0,0.6); font-size: 2.2vh; font-weight: bold; letter-spacing: 0.1em; }
-  .live b { width: 1.4vh; height: 1.4vh; border-radius: 50%; background: #ff3b3b; animation: pulse 1.4s infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+  .live { position: absolute; left: 1.6vh; top: 1.6vh; z-index: 2; display: flex; align-items: center; gap: 0.8vh;
+    padding: 0.6vh 1.3vh; border-radius: 0.8vh; background: rgba(0,0,0,0.55); font-size: 1.9vh; color: #ddd; }
+  .live b { width: 1.1vh; height: 1.1vh; border-radius: 50%; background: #d9534f; }
   .camwait { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    font-size: 4vh; color: var(--sub); background: #000; z-index: 1; }
+    font-size: 3.4vh; color: var(--sub); background: #000; z-index: 1; }
   .camwait[hidden] { display: none; }
 
   /* 右の列 */
   .side { display: flex; flex-direction: column; gap: 2vh; min-height: 0; }
   .side .grow { flex: 1; min-height: 0; overflow: hidden; }
-  .card { background: var(--panel); border: 0.25vh solid var(--line); border-radius: 2.4vh; padding: 2.2vh 1.8vw; }
-  .card h2 { margin: 0 0 1.4vh; font-size: 2.4vh; color: var(--sub); letter-spacing: 0.15em; font-weight: bold; }
-  .status { text-align: center; padding: 2.6vh 1.2vw; transition: border-color .3s, box-shadow .3s; }
-  .status .icon { font-size: 7vh; line-height: 1.1; }
-  .status .msg { font-size: 4.2vh; font-weight: bold; margin-top: 1vh; line-height: 1.3; }
-  .status .hint { font-size: 2.3vh; color: var(--sub); margin-top: 1vh; min-height: 1.4em; }
-  .status.go { border-color: var(--cyan); box-shadow: 0 0 4vh rgba(45, 226, 255, 0.35); }
-  .status.track { border-color: var(--gold); box-shadow: 0 0 4vh rgba(255, 210, 63, 0.35); }
-  .status.go .icon { animation: bob 1.2s ease-in-out infinite; }
-  @keyframes bob { 0%,100% { transform: translateX(-0.8vw); } 50% { transform: translateX(0.8vw); } }
+  .card { background: var(--panel); border: 0.15vh solid var(--line); border-radius: 1.2vh; padding: 2.2vh 1.8vw; }
+  .card h2 { margin: 0 0 1.4vh; font-size: 2vh; color: var(--sub); letter-spacing: 0.1em; font-weight: normal; }
+  .status { padding: 2.8vh 1.8vw; border-left: 0.8vh solid var(--line); transition: border-color .4s; }
+  .status .icon { display: none; }
+  .status .msg { font-size: 3.8vh; font-weight: bold; line-height: 1.3; }
+  .status .hint { font-size: 2.2vh; color: var(--sub); margin-top: 1vh; min-height: 1.4em; }
+  .status.go { border-left-color: var(--accent); }
+  .status.track { border-left-color: #e0c060; }
 
-  ol.howto { margin: 0; padding: 0; list-style: none; display: grid; gap: 1.8vh; counter-reset: s; }
-  ol.howto li { counter-increment: s; display: flex; align-items: center; gap: 1vw; font-size: 2.7vh; white-space: nowrap; line-height: 1.35; }
-  ol.howto li::before { content: counter(s); flex: none; width: 4.6vh; height: 4.6vh; border-radius: 50%;
-    display: grid; place-items: center; font-weight: bold; font-size: 2.6vh; color: #0b0f24;
-    background: linear-gradient(135deg, var(--cyan), #7f9bff); }
+  ol.howto { margin: 0; padding: 0; list-style: none; display: grid; gap: 1.4vh; counter-reset: s; }
+  ol.howto li { counter-increment: s; display: flex; align-items: center; gap: 1vw; font-size: 2.4vh; white-space: nowrap; line-height: 1.35; }
+  ol.howto li::before { content: counter(s); flex: none; width: 3.6vh; height: 3.6vh; border-radius: 50%;
+    display: grid; place-items: center; font-size: 2vh; color: var(--text); border: 0.2vh solid var(--sub); }
 
   .last .row { display: flex; align-items: baseline; justify-content: space-between; }
-  .last .row > span:first-child { font-size: 2.8vh; }
-  .last .big { font-size: 5.4vh; font-weight: bold; font-variant-numeric: tabular-nums; color: var(--cyan); }
-  .last .big small { font-size: 2.6vh; color: var(--sub); margin-left: 0.4vw; }
-  .last .none { font-size: 2.6vh; color: var(--sub); }
+  .last .row > span:first-child { font-size: 2.4vh; color: var(--sub); }
+  .last .big { font-size: 4.6vh; font-weight: bold; font-variant-numeric: tabular-nums; color: var(--text); }
+  .last .big small { font-size: 2.2vh; color: var(--sub); margin-left: 0.4vw; font-weight: normal; }
+  .last .none { font-size: 2.4vh; color: var(--sub); }
+  .last .detail { font-size: 2vh; color: var(--sub); margin-top: 0.6vh; font-variant-numeric: tabular-nums; }
+  .last .bad { font-size: 2.5vh; color: #e08a8a; line-height: 1.4; }
 
-  /* 投球したときの演出 */
-  .shout { position: absolute; left: 0; right: 0; top: 50%; margin-top: -0.6em; text-align: center; z-index: 3; pointer-events: none;
-    font-size: 11vh; white-space: nowrap; font-weight: 900; letter-spacing: 0.05em; opacity: 0; }
-  .shout.show { animation: shout 2.4s ease-out forwards; }
-  .shout.good { color: #fff; text-shadow: 0 0 2vh var(--pink), 0 0 6vh var(--pink); }
-  .shout.again { color: #fff; font-size: 7.5vh; text-shadow: 0 0 2vh #6b8bff, 0 0 5vh #6b8bff; }
-  @keyframes shout { 0% { opacity: 0; transform: scale(0.6); } 12% { opacity: 1; transform: scale(1.08); }
-    22% { transform: scale(1); } 80% { opacity: 1; } 100% { opacity: 0; transform: scale(1.04); } }
+  /* 投球したときの表示 (控えめな帯) */
+  .shout { position: absolute; left: 50%; bottom: 5vh; transform: translateX(-50%); z-index: 3; pointer-events: none;
+    padding: 1.6vh 3vw; border-radius: 1.2vh; background: rgba(14, 18, 24, 0.85); border: 0.15vh solid var(--line);
+    font-size: 4.6vh; font-weight: bold; white-space: nowrap; opacity: 0; }
+  .shout.good { border-left: 0.8vh solid var(--accent); }
+  .shout.again { border-left: 0.8vh solid #d9534f; }
+  .shout.show { animation: shout 2.6s ease forwards; }
+  @keyframes shout { 0% { opacity: 0; } 10% { opacity: 1; } 80% { opacity: 1; } 100% { opacity: 0; } }
 
   /* ハイスコアの名前入力 (管理画面で打っている文字がそのまま出る) */
-  .hs { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center;
-    background: radial-gradient(circle at 50% 40%, rgba(80, 50, 0, 0.75), rgba(0, 0, 0, 0.88)); }
+  .hs { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; background: rgba(8, 10, 14, 0.86); }
   .hs[hidden] { display: none; }
-  .hs .box { width: min(80vw, 1500px); text-align: center; padding: 6vh 4vw; border-radius: 4vh;
-    background: linear-gradient(180deg, rgba(60, 40, 0, 0.9), rgba(25, 16, 0, 0.92));
-    border: 0.6vh solid var(--gold); box-shadow: 0 0 10vh rgba(255, 210, 63, 0.5); position: relative; overflow: hidden; }
-  .hs .crown { font-size: 12vh; line-height: 1; animation: bob2 1.6s ease-in-out infinite; }
-  @keyframes bob2 { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-1.5vh); } }
-  .hs .head { font-size: 9vh; font-weight: 900; color: var(--gold); margin-top: 1vh;
-    text-shadow: 0 0 3vh rgba(255, 210, 63, 0.7); letter-spacing: 0.08em; }
-  .hs .score { font-size: 5vh; margin-top: 1vh; }
-  .hs .score b { font-size: 8vh; color: #fff; margin-left: 1vw; font-variant-numeric: tabular-nums; }
-  .hs .label { font-size: 3vh; color: #e8d9a8; margin-top: 4vh; letter-spacing: 0.3em; }
-  .hs .name { margin: 1.5vh auto 0; max-width: 90%; min-height: 13vh; padding: 1.5vh 2vw; border-radius: 2vh;
-    background: rgba(0, 0, 0, 0.55); border: 0.3vh solid rgba(255, 210, 63, 0.6);
-    font-size: 9vh; font-weight: bold; line-height: 1.2; word-break: break-all; }
-  .hs .name.empty { color: #b9ab84; font-size: 5vh; font-weight: normal; line-height: 2.4; }
-  .caret { display: inline-block; width: 0.07em; height: 0.95em; margin-left: 0.08em; vertical-align: -0.1em;
-    background: var(--gold); animation: blink 1s steps(1) infinite; }
+  .hs .box { width: min(70vw, 1300px); text-align: center; padding: 5vh 4vw; border-radius: 2vh;
+    background: var(--panel); border: 0.3vh solid var(--gold); }
+  .hs .crown { font-size: 7vh; line-height: 1; }
+  .hs .head { font-size: 6.4vh; font-weight: bold; color: var(--gold); margin-top: 1.5vh; letter-spacing: 0.06em; }
+  .hs .score { font-size: 3.6vh; margin-top: 1.2vh; color: var(--sub); }
+  .hs .score b { font-size: 6vh; color: var(--text); margin-left: 1vw; font-variant-numeric: tabular-nums; }
+  .hs .label { font-size: 2.4vh; color: var(--sub); margin-top: 3.5vh; letter-spacing: 0.2em; }
+  .hs .name { margin: 1.2vh auto 0; max-width: 90%; min-height: 11vh; padding: 1.5vh 2vw; border-radius: 1.2vh;
+    background: var(--bg); border: 0.15vh solid var(--line); font-size: 7vh; font-weight: bold; line-height: 1.2; word-break: break-all; }
+  .hs .name.empty { color: var(--sub); font-size: 3.6vh; font-weight: normal; line-height: 2.6; }
+  .caret { display: inline-block; width: 0.06em; height: 0.95em; margin-left: 0.08em; vertical-align: -0.1em;
+    background: var(--gold); animation: blink 1.2s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
-  .hs .spark { position: absolute; width: 1.2vh; height: 2.4vh; top: -4vh; border-radius: 0.3vh; animation: fall linear infinite; }
-  @keyframes fall { to { transform: translateY(80vh) rotate(540deg); } }
 </style>
 </head>
 <body>
@@ -748,11 +754,20 @@ const char* const kDisplayHtml = R"HTML(<!doctype html>
     <div class="clock" id="clock"></div>
   </header>
   <div class="main">
+    <div class="left">
     <div class="camera" id="camera">
-      <div class="live"><b></b>LIVE カメラ</div>
+      <div class="live"><b></b>ライブカメラ</div>
       <div class="camwrap"><div class="stage"><img id="cam" src="/stream" alt=""><canvas id="overlay"></canvas></div></div>
       <div class="camwait" id="camWait" hidden>カメラを準備しています...</div>
       <div class="shout" id="shout"></div>
+    </div>
+    <div class="legend">
+      <span><i class="ln" style="background:#ffd400"></i>追跡中の軌跡</span>
+      <span><i class="ln" style="background:#33ccff"></i>前回の投球</span>
+      <span><i class="ln" style="background:#ff5555"></i>投球として扱わなかった動き</span>
+      <span><i class="bx" style="border-color:#00ff66"></i>ボール</span>
+      <span><i class="bx" style="border-color:#888888"></i>範囲外・大きさ違いで無視</span>
+    </div>
     </div>
     <div class="side">
       <div class="card status" id="status">
@@ -804,15 +819,18 @@ const char* const kDisplayHtml = R"HTML(<!doctype html>
     if (overlay.height !== h) { overlay.height = h; overlay.style.height = h + 'px'; }
   }
 
-  function drawPath(ctx, points, sx, sy, color, width, glow) {
-    if (!points || points.length < 2) return;
-    ctx.save();
-    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    ctx.shadowColor = glow; ctx.shadowBlur = width * 3;
+  // 線と枠は管理画面と同じ描き方 (大きな画面でも同じ見た目になるよう太さだけ拡大する)。
+  function drawPath(ctx, points, sx, sy, color, k) {
+    if (!points || points.length === 0) return;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 3 * k;
     ctx.beginPath();
     points.forEach((p, i) => { if (i === 0) ctx.moveTo(p[0] * sx, p[1] * sy); else ctx.lineTo(p[0] * sx, p[1] * sy); });
     ctx.stroke();
-    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(points[0][0] * sx, points[0][1] * sy, 5 * k, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   // 管理画面と同じ判定 (範囲内かつ登録した大きさに近い検出だけを使う)。
@@ -830,32 +848,37 @@ const char* const kDisplayHtml = R"HTML(<!doctype html>
     fitCamera();
     const W = overlay.width, H = overlay.height, ctx = overlay.getContext('2d');
     ctx.clearRect(0, 0, W, H);
-    const base = Math.max(3, Math.min(W, H) / 110);
+    const k = Math.max(1, H / 540);
     const t = throwData;
     if (t && t.roi) {
       const r = t.roi;
-      ctx.fillStyle = 'rgba(0,0,10,0.45)';
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
       ctx.fillRect(0, 0, W, r.y0 * H);
       ctx.fillRect(0, r.y1 * H, W, H - r.y1 * H);
       ctx.fillRect(0, r.y0 * H, r.x0 * W, (r.y1 - r.y0) * H);
       ctx.fillRect(r.x1 * W, r.y0 * H, W - r.x1 * W, (r.y1 - r.y0) * H);
+      ctx.setLineDash([8 * k, 6 * k]);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2 * k;
+      ctx.strokeRect(r.x0 * W, r.y0 * H, (r.x1 - r.x0) * W, (r.y1 - r.y0) * H);
+      ctx.setLineDash([]);
     }
     if (t && t.enabled && t.frame_width) {
       const sx = W / t.frame_width, sy = H / t.frame_height;
-      if (t.last && !t.last.is_test && t.last.accepted) drawPath(ctx, t.last.points, sx, sy, 'rgba(45,226,255,0.75)', base, '#2de2ff');
-      drawPath(ctx, t.tracking_points, sx, sy, '#ffd23f', base * 1.5, '#ffb000');
+      if (t.last && !t.last.is_test) drawPath(ctx, t.last.points, sx, sy, t.last.accepted ? '#33ccff' : '#ff5555', k);
+      drawPath(ctx, t.tracking_points, sx, sy, '#ffd400', k);
     }
     const d = detData;
     if (d && d.enabled && d.frame_width) {
       const sx = W / d.frame_width, sy = H / d.frame_height;
-      const pulse = 1 + 0.12 * Math.sin(Date.now() / 150);
+      ctx.lineWidth = 2 * k;
+      ctx.font = (14 * k) + 'px sans-serif';
       for (const b of d.detections) {
-        if (!isUsable(b, d.frame_width, d.frame_height)) continue;
-        const r = (Math.max(b.w * sx, b.h * sy) / 2 + base * 2) * pulse;
-        ctx.save();
-        ctx.strokeStyle = '#3dff8b'; ctx.lineWidth = base; ctx.shadowColor = '#3dff8b'; ctx.shadowBlur = base * 4;
-        ctx.beginPath(); ctx.arc((b.x + b.w / 2) * sx, (b.y + b.h / 2) * sy, r, 0, Math.PI * 2); ctx.stroke();
-        ctx.restore();
+        const color = isUsable(b, d.frame_width, d.frame_height) ? '#00ff66' : '#888888';
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.strokeRect(b.x * sx, b.y * sy, b.w * sx, b.h * sy);
+        ctx.fillText('ball ' + b.confidence.toFixed(2), b.x * sx, Math.max(14 * k, b.y * sy - 4 * k));
       }
     }
   }
@@ -889,13 +912,21 @@ const char* const kDisplayHtml = R"HTML(<!doctype html>
     if (!t || !t.last || t.last.is_test) return;
     const l = t.last;
     if (lastShownId !== null && l.id !== lastShownId) {
-      if (l.accepted) shout('ナイスショット！', 'good'); else shout('もう一回投げてみよう！', 'again');
+      if (l.accepted) shout('ナイスショット！', 'good');
+      else if (l.message.startsWith('早すぎます')) shout('早すぎ！ゆっくり投げてね！', 'again');
+      else shout('もう一回投げてみよう！', 'again');
     }
     lastShownId = l.id;
+    const body = $('lastBody');
     if (l.accepted) {
-      $('lastBody').className = '';
-      $('lastBody').innerHTML = '<div class="row"><span>転がった時間</span><span class="big">' +
-        l.duration_s.toFixed(2) + '<small>秒</small></span></div>';
+      body.className = '';
+      body.innerHTML = '<div class="row"><span>転がった時間</span><span class="big">' +
+        l.duration_s.toFixed(2) + '<small>秒</small></span></div>' +
+        '<div class="detail">位置 ' + l.position.toFixed(3) + ' / 横 ' + l.velocity_x.toFixed(3) +
+        ' / 前 ' + l.velocity_y.toFixed(3) + ' / ' + (l.axis === 'horizontal' ? '横' : '縦') + '向き</div>';
+    } else {
+      body.className = 'bad';
+      body.textContent = l.message.split(' (')[0];  // お客さんには理由の細かい所は出さない
     }
   }
 
@@ -939,7 +970,6 @@ const char* const kDisplayHtml = R"HTML(<!doctype html>
     const show = !!(u && u.connected && u.name_input);
     $('hs').hidden = !show;
     if (!show) return;
-    makeSparks();
     $('hsScore').innerHTML = u.score >= 0 ? 'スコア<b>' + u.score + '</b>' : '';
     const el = $('hsName'), name = u.name_draft || '';
     el.textContent = name || 'なまえを入力しています';
