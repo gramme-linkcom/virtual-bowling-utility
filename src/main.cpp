@@ -327,10 +327,30 @@ int main(int argc, char* argv[]) {
     if (!options.is_compute_explicit) {
         detection::parse_compute_target(throw_service.setting(kComputeSettingKey), options.detector.target);
     }
+    // モデルは --model が優先。無ければ前回 Web UI で選んだもの (見つからなければ既定の models/best.onnx)。
+    const std::string default_model_path = options.detector.model_path;
+    if (!options.is_model_explicit) {
+        const std::string saved_model = throw_service.setting("model");
+        std::error_code saved_error;
+        if (!saved_model.empty() && std::filesystem::exists(saved_model, saved_error)) {
+            options.detector.model_path = saved_model;
+        }
+    }
     detection::BallDetector yolo(options.detector);
     std::string detection_message;
     std::error_code file_error;
     bool is_yolo_loaded = false;
+    bool is_preloaded = false;  // 前回選んだモデルをもう読み込めたか
+    if (!options.is_model_explicit && options.detector.model_path != default_model_path) {
+        is_preloaded = yolo.load(error);
+    }
+    if (!options.is_model_explicit && options.detector.model_path != default_model_path && !is_preloaded) {
+        // 前回選んだモデルが読めないときは、既定のモデルで起動する
+        std::cerr << "[warn][detector] " << options.detector.model_path << " を読めません (" << error
+                  << ")。" << default_model_path << " を使います\n";
+        options.detector.model_path = default_model_path;
+        yolo = detection::BallDetector(options.detector);
+    }
     if (!std::filesystem::exists(options.detector.model_path, file_error)) {
         detection_message = "モデルが見つかりません: " + options.detector.model_path;
         if (options.is_model_explicit) {
@@ -338,12 +358,12 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         std::cerr << "[warn][detector] " << detection_message << " (OpenCV だけで検出します)\n";
-    } else if (!yolo.load(error)) {
+    } else if (!is_preloaded && !yolo.load(error)) {
         detection_message = error;
         std::cerr << "[error][detector] " << error << " (OpenCV だけで検出します)\n";
     } else {
         is_yolo_loaded = true;
-        std::cout << "[detector] loaded " << options.detector.model_path
+        std::cout << "[detector] loaded " << yolo.config().model_path << " input=" << yolo.config().input_size
                   << " conf>=" << options.detector.conf_threshold
                   << " compute=" << detection::to_string(yolo.target()) << "\n";
     }

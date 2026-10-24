@@ -23,9 +23,13 @@ enum class ComputeTarget {
 const char* to_string(ComputeTarget target);
 bool parse_compute_target(const std::string& text, ComputeTarget& target);
 
+// ONNX ファイルの入力の大きさ (例: 640x640 なら 640) を読む。読めない・正方形でないときは -1 と理由。
+// path は UTF-8。onnx ライブラリは使わず、ファイルの中身 (protobuf) を直接読む。
+int read_onnx_input_size(const std::string& path, std::string& error_message);
+
 struct DetectorConfig {
     std::string model_path = "models/best.onnx";
-    // 学習・書き出し時の画像サイズ (2026-10-16: imgsz=640 で ONNX に書き出し)
+    // 学習・書き出し時の画像サイズ。load() のときにモデルから自動で読み取る (読めなければこの値)。
     int input_size = 640;
     // 信頼度のしきい値。ボールの色・照明で調整する。まだ実機映像で調整していない初期値。
     float conf_threshold = 0.25f;
@@ -48,6 +52,9 @@ public:
     ComputeTarget target() const {
         return config_.target;
     }
+    // 使うモデル (ONNX) を変える。読み直して試しに推論するので数秒かかる。
+    // 失敗したら今のモデルのまま false を返す。detect() と同じスレッドから呼ぶこと。
+    bool set_model(const std::string& model_path, std::string& message);
     std::vector<Detection> detect(const cv::Mat& bgr_frame) override;
 
     const DetectorConfig& config() const {

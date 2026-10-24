@@ -5,7 +5,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <utility>
 
 namespace detection {
@@ -19,6 +23,122 @@ constexpr double kInputScale = 1.0 / 255.0;
 constexpr int kBoxChannels = 4;
 
 }  // namespace
+
+// ---- ONNX ファイルから入力の大きさを読む (protobuf を最小限だけ読む。onnx ライブラリ不要) ----
+// ModelProto.graph(7) → GraphProto.input(11) の最初 → ValueInfoProto.type(2) → TypeProto.tensor_type(1)
+// → Tensor.shape(2) → TensorShapeProto.dim(1) の並び → Dimension.dim_value(1)
+namespace onnx_shape {
+
+struct Span {
+    const unsigned char* p = nullptr;
+    const unsigned char* end = nullptr;
+};
+
+bool read_varint(Span& s, std::uint64_t& value) {
+    value = 0;
+    for (int shift = 0; shift < 64 && s.p < s.end; shift += 7) {
+        const unsigned char b = *s.p++;
+        value |= static_cast<std::uint64_t>(b & 0x7F) << shift;
+        if ((b & 0x80) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 次のフィールドを読む。長さ付き (wire 2) なら sub に中身、varint (wire 0) なら value に値。
+bool next_field(Span& s, std::uint32_t& field, std::uint32_t& wire, Span& sub, std::uint64_t& value) {
+    std::uint64_t key = 0;
+    if (s.p >= s.end || !read_varint(s, key)) {
+        return false;
+    }
+    field = static_cast<std::uint32_t>(key >> 3);
+    wire = static_cast<std::uint32_t>(key & 7);
+    switch (wire) {
+        case 0:
+            return read_varint(s, value);
+        case 1:
+            if (s.end - s.p < 8) return false;
+            s.p += 8;
+            return true;
+        case 5:
+            if (s.end - s.p < 4) return false;
+            s.p += 4;
+            return true;
+        case 2: {
+            std::uint64_t length = 0;
+            if (!read_varint(s, length) || length > static_cast<std::uint64_t>(s.end - s.p)) return false;
+            sub = {s.p, s.p + length};
+            s.p += length;
+            return true;
+        }
+        default:
+            return false;  // 古い group 形式などは使われていない
+    }
+}
+
+// 中から field 番号の長さ付きフィールドを最初の1つだけ探す。
+bool find_message(Span s, std::uint32_t wanted, Span& out) {
+    std::uint32_t field = 0, wire = 0;
+    Span sub;
+    std::uint64_t value = 0;
+    while (next_field(s, field, wire, sub, value)) {
+        if (field == wanted && wire == 2) {
+            out = sub;
+            return true;
+        }
+    }
+    return false;
+}
+
+// 最初の入力の形 (例: [1, 3, 640, 640])。決まっていない次元は -1。
+bool input_dims(const std::vector<unsigned char>& bytes, std::vector<long long>& dims) {
+    Span model{bytes.data(), bytes.data() + bytes.size()};
+    Span graph, input, type, tensor, shape;
+    if (!find_message(model, 7, graph) || !find_message(graph, 11, input) || !find_message(input, 2, type) ||
+        !find_message(type, 1, tensor) || !find_message(tensor, 2, shape)) {
+        return false;
+    }
+    dims.clear();
+    std::uint32_t field = 0, wire = 0;
+    Span dim;
+    std::uint64_t value = 0;
+    while (next_field(shape, field, wire, dim, value)) {
+        if (field != 1 || wire != 2) continue;
+        long long size = -1;
+        std::uint32_t f = 0, w = 0;
+        Span unused;
+        std::uint64_t v = 0;
+        while (next_field(dim, f, w, unused, v)) {
+            if (f == 1 && w == 0) size = static_cast<long long>(v);
+        }
+        dims.push_back(size);
+    }
+    return !dims.empty();
+}
+
+}  // namespace onnx_shape
+
+int read_onnx_input_size(const std::string& path, std::string& error_message) {
+    const std::filesystem::path file(std::u8string(reinterpret_cast<const char8_t*>(path.data()), path.size()));
+    std::ifstream in(file, std::ios::binary);
+    if (!in) {
+        error_message = "ファイルを開けません: " + path;
+        return -1;
+    }
+    const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::vector<long long> dims;
+    if (!onnx_shape::input_dims(bytes, dims) || dims.size() != 4) {
+        error_message = "入力の形を読み取れません";
+        return -1;
+    }
+    if (dims[2] <= 0 || dims[2] != dims[3]) {
+        error_message = "入力が正方形の固定サイズではありません (" + std::to_string(dims[2]) + "x" +
+                        std::to_string(dims[3]) + ")";
+        return -1;
+    }
+    return static_cast<int>(dims[2]);
+}
 
 BallDetector::BallDetector(DetectorConfig config) : config_(std::move(config)) {}
 
@@ -122,6 +242,14 @@ std::unique_ptr<OrtEngine> BallDetector::load_ort(std::string& error_message) co
 }
 
 bool BallDetector::load(std::string& error_message) {
+    // 入力の大きさはモデルから読む (320 で書き出したモデルなら 320)。読めなければ設定の値のまま。
+    std::string size_error;
+    const int size = read_onnx_input_size(config_.model_path, size_error);
+    if (size > 0) {
+        config_.input_size = size;
+    } else {
+        std::cerr << "[detector] " << size_error << "。入力 " << config_.input_size << " として扱います\n";
+    }
     if (config_.target == ComputeTarget::OnnxRuntime) {
         ort_ = load_ort(error_message);
         if (ort_) {
@@ -180,6 +308,27 @@ bool BallDetector::set_target(ComputeTarget target, std::string& message) {
     message = target == ComputeTarget::Cpu ? "CPU で推論します" : "GPU (" + std::string(to_string(target)) + ") で推論します";
     if (target != ComputeTarget::Cpu) {
         message += " — " + cv::ocl::Device::getDefault().name();
+    }
+    return true;
+}
+
+bool BallDetector::set_model(const std::string& model_path, std::string& message) {
+    DetectorConfig next = config_;
+    next.model_path = model_path;
+    next.input_size = 640;  // load() でモデルから読み直す
+    BallDetector candidate(next);
+    if (!candidate.load(message)) {
+        return false;  // 今のモデルのまま動き続ける
+    }
+    const ComputeTarget wanted = config_.target;
+    *this = std::move(candidate);
+    const std::string name =
+        std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(model_path.data()), model_path.size()))
+            .filename()
+            .string();
+    message = "モデルを切り替えました: " + name + " (入力 " + std::to_string(config_.input_size) + ")";
+    if (config_.target != wanted) {
+        message += std::string(" — ") + to_string(wanted) + " で読めなかったので " + to_string(config_.target) + " で動かします";
     }
     return true;
 }

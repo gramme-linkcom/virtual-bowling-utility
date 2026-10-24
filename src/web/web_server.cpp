@@ -1,7 +1,10 @@
 #include "vb/web/web_server.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <cstdint>
 #include <iomanip>
 #include <memory>
@@ -158,9 +161,18 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
       <button id="modeBtn">適用</button>
       <span id="modeMsg" class="muted"></span>
     </div>
+    <div class="row">
+      モデル
+      <select id="modelSel" style="min-width:220px"></select>
+      <button id="modelBtn">切り替え</button>
+      <button class="sub" id="modelScan">一覧を更新</button>
+      <span id="modelMsg" class="muted"></span>
+    </div>
     <div class="muted" id="computeInfo"></div>
     <div class="muted">計算: YOLO を CPU と GPU (OpenCL) のどちらで動かすか。切り替えて上の「○○ ms」を見比べ、速い方を使ってください
       (GPU は最初の切り替えに数秒かかります。小さいモデルでは CPU の方が速いこともあります)。<br>
+      モデル: models フォルダの .onnx から選べます。入力の大きさ (320 / 640 など) はモデルから自動で読み取ります。
+      小さい入力のモデルほど速くなります (320 なら 640 の約 1/4 の計算)。<br>
       OpenCV だけ: 背景との差で「動いている丸い物」を探します (止まっている物は検出しません)。
       感度は小さいほど敏感です。影や人を拾うときは大きく、ボールを拾えないときは小さくしてください。</div>
     <div class="row">
@@ -344,8 +356,9 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
       }
       if (d.enabled && d.compute !== undefined) {
         const names = { cpu: 'CPU (OpenCV)', onnxruntime: 'CPU (ONNX Runtime)', opencl: 'GPU (OpenCL)', opencl_fp16: 'GPU (OpenCL FP16)' };
-        $('computeInfo').textContent = d.compute_switching ? '計算装置を切り替え中...'
-          : 'YOLO の計算: ' + names[d.compute] + (d.compute_message ? ' — ' + d.compute_message : '');
+        $('computeInfo').textContent = d.compute_switching ? '切り替え中...'
+          : 'YOLO の計算: ' + names[d.compute] + (d.model ? ' / モデル: ' + d.model + ' (入力 ' + d.input_size + ')' : '') +
+            (d.compute_message ? ' — ' + d.compute_message : '');
       }
       if (d.enabled && d.mode && !modeTouched) {
         $('modeSel').value = d.mode;
@@ -447,6 +460,38 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
     await action('/api/detector', params, 'modeMsg');
     modeTouched = false;
   });
+
+  // ---- モデル (models フォルダの .onnx) ----
+  async function loadModels() {
+    try {
+      const r = await fetch('/api/models', { cache: 'no-store' });
+      const d = await r.json();
+      const sel = $('modelSel');
+      sel.innerHTML = '';
+      for (const m of d.models || []) {
+        const o = document.createElement('option');
+        o.value = m.name;
+        o.textContent = m.name + (m.input_size > 0 ? ` (入力 ${m.input_size})` : ' (入力サイズ不明)') + (m.name === d.current ? ' ← 使用中' : '');
+        sel.appendChild(o);
+      }
+      if (d.current) sel.value = d.current;
+      sel.disabled = $('modelBtn').disabled = !d.available;
+      if (!d.available) flash('modelMsg', d.message || 'YOLO が使えません', false);
+    } catch (e) {
+      flash('modelMsg', '一覧を取得できません', false);
+    }
+  }
+  $('modelScan').addEventListener('click', loadModels);
+  $('modelBtn').addEventListener('click', async () => {
+    try {
+      const d = await post('/api/model', { name: $('modelSel').value });
+      flash('modelMsg', d.message, d.ok);
+    } catch (e) {
+      flash('modelMsg', '送れませんでした', false);
+    }
+    setTimeout(loadModels, 3000);
+  });
+  loadModels();
 
   $('startBtn').addEventListener('click', () => action('/api/armed', { on: '1' }));
   $('stopBtn').addEventListener('click', () => action('/api/armed', { on: '0' }));
@@ -1086,6 +1131,42 @@ const char* const kDisplayHtml = R"HTML(<!doctype html>
 )HTML";
 
 // JSON の文字列に入れても壊れないようにする。
+// ---- モデル (ONNX) の一覧 ----
+std::filesystem::path utf8_path(const std::string& text) {
+    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size()));
+}
+
+std::string path_utf8(const std::filesystem::path& path) {
+    const std::u8string text = path.u8string();
+    return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+}
+
+// "models/best.onnx" → "best.onnx"
+std::string model_file_name(const std::string& path) {
+    return path.empty() ? std::string() : path_utf8(utf8_path(path).filename());
+}
+
+// "models/best.onnx" → "models" (フォルダが無ければ "models")
+std::string model_dir_of(const std::string& path) {
+    const std::filesystem::path parent = utf8_path(path).parent_path();
+    return parent.empty() ? std::string("models") : path_utf8(parent).c_str();
+}
+
+// フォルダの中の .onnx のファイル名 (名前順)。
+std::vector<std::string> list_models(const std::string& dir) {
+    std::vector<std::string> names;
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(utf8_path(dir), error)) {
+        std::string ext = path_utf8(entry.path().extension());
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (entry.is_regular_file(error) && ext == ".onnx") {
+            names.push_back(path_utf8(entry.path().filename()));
+        }
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
 std::string json_escape(const std::string& text) {
     std::string escaped;
     escaped.reserve(text.size());
@@ -1235,7 +1316,9 @@ void WebServer::register_routes() {
                      << "\",\"cv_threshold\":" << detector_->cv_threshold()
                      << ",\"compute\":\"" << detection::to_string(detector_->compute())
                      << "\",\"compute_switching\":"
-                     << (detector_->is_compute_switching() ? "true" : "false")
+                     << (detector_->is_compute_switching() || detector_->is_model_switching() ? "true" : "false")
+                     << ",\"model\":\"" << json_escape(model_file_name(detector_->model_path()))
+                     << "\",\"input_size\":" << detector_->input_size()
                      << ",\"compute_message\":\"" << json_escape(detector_->compute_message())
                      << "\"";
             }
@@ -1332,6 +1415,56 @@ void WebServer::register_routes() {
         const bool on = req.get_param_value("on") == "1";
         throws_->set_armed(on);
         send_result(res, true, on ? "計測を開始しました" : "計測を停止しました");
+    });
+
+    // 使える YOLO のモデル (今のモデルと同じフォルダの .onnx) と、それぞれの入力の大きさ。
+    server_.Get("/api/models", [this](const httplib::Request&, httplib::Response& res) {
+        res.set_header("Cache-Control", "no-store");
+        if (detector_ == nullptr || !detector_->has_yolo()) {
+            res.set_content(
+                "{\"available\":false,\"message\":\"YOLO のモデルが読み込めていないので切り替えられません\",\"models\":[]}",
+                "application/json"
+            );
+            return;
+        }
+        const std::string current = detector_->model_path();
+        std::ostringstream json;
+        json << "{\"available\":true,\"current\":\"" << json_escape(model_file_name(current))
+             << "\",\"models\":[";
+        bool is_first = true;
+        for (const std::string& name : list_models(model_dir_of(current))) {
+            std::string error;
+            const int size = detection::read_onnx_input_size(model_dir_of(current) + "/" + name, error);
+            json << (is_first ? "" : ",") << "{\"name\":\"" << json_escape(name) << "\",\"input_size\":" << size << "}";
+            is_first = false;
+        }
+        json << "]}";
+        res.set_content(json.str(), "application/json");
+    });
+
+    // 使う YOLO のモデルを切り替える (name=ファイル名)。settings.ini に保存し、次の起動でも使う。
+    server_.Post("/api/model", [this](const httplib::Request& req, httplib::Response& res) {
+        if (detector_ == nullptr) {
+            send_result(res, false, "検出器がありません");
+            return;
+        }
+        const std::string name = req.get_param_value("name");
+        const std::string dir = model_dir_of(detector_->model_path());
+        const std::vector<std::string> models = list_models(dir);
+        if (std::find(models.begin(), models.end(), name) == models.end()) {
+            send_result(res, false, "そのモデルはありません: " + name);
+            return;
+        }
+        const std::string path = dir + "/" + name;
+        std::string message;
+        if (!detector_->request_model(path, message)) {
+            send_result(res, false, message);
+            return;
+        }
+        if (throws_ != nullptr) {
+            throws_->set_setting("model", path);
+        }
+        send_result(res, true, message);
     });
 
     // 学習用の画像保存 (データセット)。

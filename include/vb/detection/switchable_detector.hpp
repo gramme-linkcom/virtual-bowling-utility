@@ -47,6 +47,15 @@ public:
     }
     std::string compute_message() const;
 
+    // 使う YOLO のモデル (ONNX) の切り替えを頼む。実際の切り替えは検出スレッドで行う。結果は compute_message()。
+    bool request_model(const std::string& model_path, std::string& message);
+    bool is_model_switching() const;
+    // 今使っているモデルのパス (UTF-8) と入力の大きさ。
+    std::string model_path() const;
+    int input_size() const {
+        return input_size_.load();
+    }
+
     // OpenCV 検出の感度 (背景との差のしきい値 1〜255)。
     void set_cv_threshold(int threshold);
     int cv_threshold() const {
@@ -63,6 +72,10 @@ private:
     std::atomic<int> requested_compute_{-1};  // -1: 切り替え待ちなし
     mutable std::mutex message_mutex_;
     std::string compute_message_;
+    // モデルの切り替え (message_mutex_ で守る)
+    std::string requested_model_;  // 空なら依頼なし
+    std::string model_path_;
+    std::atomic<int> input_size_{0};
 };
 
 }  // namespace detection
