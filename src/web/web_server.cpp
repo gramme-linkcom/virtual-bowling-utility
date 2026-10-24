@@ -634,67 +634,191 @@ const char* const kDisplayHtml = R"HTML(<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>バーチャルボーリング</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #000; color: #fff; overflow: hidden;
-               font-family: "Yu Gothic UI", "Meiryo", system-ui, sans-serif; }
-  .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  :root {
+    --bg: #070b1a; --panel: rgba(18, 26, 56, 0.82); --line: rgba(120, 160, 255, 0.25);
+    --pink: #ff3fa4; --cyan: #2de2ff; --gold: #ffd23f; --text: #f4f6ff; --sub: #a9b4d6;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; color: var(--text);
+    font-family: "BIZ UDPGothic", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+    background: radial-gradient(ellipse at 20% -10%, #24206b 0%, transparent 55%),
+                radial-gradient(ellipse at 110% 110%, #4a1240 0%, transparent 50%), var(--bg); }
+  .app { position: fixed; inset: 0; display: grid; grid-template-rows: 13vh 1fr; gap: 2vh; padding: 2.5vh 2.5vw; }
+
+  /* ヘッダー */
+  header { display: flex; align-items: center; justify-content: space-between; }
+  .brand { display: flex; align-items: center; gap: 1.6vw; }
+  .logo { width: 9vh; height: 9vh; border-radius: 50%; position: relative;
+    background: radial-gradient(circle at 35% 30%, #6b8bff, #1b2a8f 60%, #0a0f3a);
+    box-shadow: 0 0 3vh rgba(45, 226, 255, 0.45); }
+  .logo i { position: absolute; width: 1.3vh; height: 1.3vh; border-radius: 50%; background: #0a0f2a; }
+  .logo i:nth-child(1) { left: 3.2vh; top: 2.4vh; } .logo i:nth-child(2) { left: 4.9vh; top: 2.2vh; }
+  .logo i:nth-child(3) { left: 4.3vh; top: 3.9vh; }
+  .title small { display: block; font-size: 2.2vh; letter-spacing: 0.6em; color: var(--cyan); font-weight: bold; }
+  .title h1 { margin: 0.4vh 0 0; font-size: 6.4vh; line-height: 1; letter-spacing: 0.06em;
+    background: linear-gradient(90deg, #fff 0%, #ffd9f0 40%, var(--pink) 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 0 1.2vh rgba(255, 63, 164, 0.45)); }
+  .clock { font-size: 5vh; font-weight: bold; font-variant-numeric: tabular-nums; color: var(--sub); }
+
+  .main { display: grid; grid-template-columns: 1fr 30vw; gap: 2vw; min-height: 0; }
+
+  /* カメラ */
+  .camera { position: relative; border-radius: 2.4vh; background: #000; overflow: hidden; min-height: 0;
+    border: 0.35vh solid var(--line); box-shadow: 0 0 5vh rgba(45, 226, 255, 0.12) inset, 0 2vh 6vh rgba(0,0,0,0.5); }
+  .camwrap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
   .stage { position: relative; line-height: 0; }
-  .stage img { display: block; max-width: 100vw; max-height: 100vh; }
-  .stage canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
-  .wait { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-          font-size: 4vh; color: #aaa; }
-  .wait[hidden] { display: none; }
+  .stage img { display: block; }
+  .stage canvas { position: absolute; left: 0; top: 0; pointer-events: none; }
+  .live { position: absolute; left: 2vh; top: 2vh; z-index: 2; display: flex; align-items: center; gap: 1vh;
+    padding: 0.8vh 1.6vh; border-radius: 99px; background: rgba(0,0,0,0.6); font-size: 2.2vh; font-weight: bold; letter-spacing: 0.1em; }
+  .live b { width: 1.4vh; height: 1.4vh; border-radius: 50%; background: #ff3b3b; animation: pulse 1.4s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+  .camwait { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 4vh; color: var(--sub); background: #000; z-index: 1; }
+  .camwait[hidden] { display: none; }
+
+  /* 右の列 */
+  .side { display: flex; flex-direction: column; gap: 2vh; min-height: 0; }
+  .side .grow { flex: 1; min-height: 0; overflow: hidden; }
+  .card { background: var(--panel); border: 0.25vh solid var(--line); border-radius: 2.4vh; padding: 2.2vh 1.8vw; }
+  .card h2 { margin: 0 0 1.4vh; font-size: 2.4vh; color: var(--sub); letter-spacing: 0.15em; font-weight: bold; }
+  .status { text-align: center; padding: 2.6vh 1.2vw; transition: border-color .3s, box-shadow .3s; }
+  .status .icon { font-size: 7vh; line-height: 1.1; }
+  .status .msg { font-size: 4.2vh; font-weight: bold; margin-top: 1vh; line-height: 1.3; }
+  .status .hint { font-size: 2.3vh; color: var(--sub); margin-top: 1vh; min-height: 1.4em; }
+  .status.go { border-color: var(--cyan); box-shadow: 0 0 4vh rgba(45, 226, 255, 0.35); }
+  .status.track { border-color: var(--gold); box-shadow: 0 0 4vh rgba(255, 210, 63, 0.35); }
+  .status.go .icon { animation: bob 1.2s ease-in-out infinite; }
+  @keyframes bob { 0%,100% { transform: translateX(-0.8vw); } 50% { transform: translateX(0.8vw); } }
+
+  ol.howto { margin: 0; padding: 0; list-style: none; display: grid; gap: 1.8vh; counter-reset: s; }
+  ol.howto li { counter-increment: s; display: flex; align-items: center; gap: 1vw; font-size: 2.7vh; white-space: nowrap; line-height: 1.35; }
+  ol.howto li::before { content: counter(s); flex: none; width: 4.6vh; height: 4.6vh; border-radius: 50%;
+    display: grid; place-items: center; font-weight: bold; font-size: 2.6vh; color: #0b0f24;
+    background: linear-gradient(135deg, var(--cyan), #7f9bff); }
+
+  .last .row { display: flex; align-items: baseline; justify-content: space-between; }
+  .last .row > span:first-child { font-size: 2.8vh; }
+  .last .big { font-size: 5.4vh; font-weight: bold; font-variant-numeric: tabular-nums; color: var(--cyan); }
+  .last .big small { font-size: 2.6vh; color: var(--sub); margin-left: 0.4vw; }
+  .last .none { font-size: 2.6vh; color: var(--sub); }
+
+  /* 投球したときの演出 */
+  .shout { position: absolute; left: 0; right: 0; top: 50%; margin-top: -0.6em; text-align: center; z-index: 3; pointer-events: none;
+    font-size: 11vh; white-space: nowrap; font-weight: 900; letter-spacing: 0.05em; opacity: 0; }
+  .shout.show { animation: shout 2.4s ease-out forwards; }
+  .shout.good { color: #fff; text-shadow: 0 0 2vh var(--pink), 0 0 6vh var(--pink); }
+  .shout.again { color: #fff; font-size: 7.5vh; text-shadow: 0 0 2vh #6b8bff, 0 0 5vh #6b8bff; }
+  @keyframes shout { 0% { opacity: 0; transform: scale(0.6); } 12% { opacity: 1; transform: scale(1.08); }
+    22% { transform: scale(1); } 80% { opacity: 1; } 100% { opacity: 0; transform: scale(1.04); } }
+
   /* ハイスコアの名前入力 (管理画面で打っている文字がそのまま出る) */
-  .name { position: fixed; left: 50%; bottom: 6vh; transform: translateX(-50%); width: min(90vw, 1400px);
-          box-sizing: border-box; padding: 3vh 4vw; border-radius: 2vh; text-align: center;
-          background: rgba(40, 30, 0, 0.88); border: 0.6vh solid #f1c40f;
-          box-shadow: 0 0 6vh rgba(241, 196, 15, 0.45); }
-  .name[hidden] { display: none; }
-  .name .head { font-size: 6vh; font-weight: bold; color: #f1c40f; line-height: 1.2; }
-  .name .score { font-size: 4vh; margin-top: 0.5vh; }
-  .name .label { font-size: 3vh; color: #ddd; margin-top: 2vh; }
-  .name .value { font-size: 8vh; font-weight: bold; line-height: 1.3; min-height: 1.3em; word-break: break-all; }
-  .name .value.empty { color: #bbb; font-size: 5vh; font-weight: normal; }
-  .caret { display: inline-block; width: 0.08em; height: 1em; margin-left: 0.08em; vertical-align: -0.12em;
-           background: #f1c40f; animation: blink 1s steps(1) infinite; }
+  .hs { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center;
+    background: radial-gradient(circle at 50% 40%, rgba(80, 50, 0, 0.75), rgba(0, 0, 0, 0.88)); }
+  .hs[hidden] { display: none; }
+  .hs .box { width: min(80vw, 1500px); text-align: center; padding: 6vh 4vw; border-radius: 4vh;
+    background: linear-gradient(180deg, rgba(60, 40, 0, 0.9), rgba(25, 16, 0, 0.92));
+    border: 0.6vh solid var(--gold); box-shadow: 0 0 10vh rgba(255, 210, 63, 0.5); position: relative; overflow: hidden; }
+  .hs .crown { font-size: 12vh; line-height: 1; animation: bob2 1.6s ease-in-out infinite; }
+  @keyframes bob2 { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-1.5vh); } }
+  .hs .head { font-size: 9vh; font-weight: 900; color: var(--gold); margin-top: 1vh;
+    text-shadow: 0 0 3vh rgba(255, 210, 63, 0.7); letter-spacing: 0.08em; }
+  .hs .score { font-size: 5vh; margin-top: 1vh; }
+  .hs .score b { font-size: 8vh; color: #fff; margin-left: 1vw; font-variant-numeric: tabular-nums; }
+  .hs .label { font-size: 3vh; color: #e8d9a8; margin-top: 4vh; letter-spacing: 0.3em; }
+  .hs .name { margin: 1.5vh auto 0; max-width: 90%; min-height: 13vh; padding: 1.5vh 2vw; border-radius: 2vh;
+    background: rgba(0, 0, 0, 0.55); border: 0.3vh solid rgba(255, 210, 63, 0.6);
+    font-size: 9vh; font-weight: bold; line-height: 1.2; word-break: break-all; }
+  .hs .name.empty { color: #b9ab84; font-size: 5vh; font-weight: normal; line-height: 2.4; }
+  .caret { display: inline-block; width: 0.07em; height: 0.95em; margin-left: 0.08em; vertical-align: -0.1em;
+    background: var(--gold); animation: blink 1s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
+  .hs .spark { position: absolute; width: 1.2vh; height: 2.4vh; top: -4vh; border-radius: 0.3vh; animation: fall linear infinite; }
+  @keyframes fall { to { transform: translateY(80vh) rotate(540deg); } }
 </style>
 </head>
 <body>
-<div class="screen"><div class="stage"><img id="cam" src="/stream" alt=""><canvas id="overlay"></canvas></div></div>
-<div class="wait" id="wait" hidden>カメラを準備しています...</div>
-<div class="name" id="nameBox" hidden>
-  <div class="head">🏆 ハイスコア！</div>
-  <div class="score" id="score"></div>
-  <div class="label">なまえ</div>
-  <div class="value" id="nameValue"></div>
+<div class="app">
+  <header>
+    <div class="brand">
+      <div class="logo"><i></i><i></i><i></i></div>
+      <div class="title"><small>VIRTUAL BOWLING</small><h1>バーチャルボーリング</h1></div>
+    </div>
+    <div class="clock" id="clock"></div>
+  </header>
+  <div class="main">
+    <div class="camera" id="camera">
+      <div class="live"><b></b>LIVE カメラ</div>
+      <div class="camwrap"><div class="stage"><img id="cam" src="/stream" alt=""><canvas id="overlay"></canvas></div></div>
+      <div class="camwait" id="camWait" hidden>カメラを準備しています...</div>
+      <div class="shout" id="shout"></div>
+    </div>
+    <div class="side">
+      <div class="card status" id="status">
+        <div class="icon" id="stIcon">🎳</div>
+        <div class="msg" id="stMsg">準備中</div>
+        <div class="hint" id="stHint"></div>
+      </div>
+      <div class="card grow">
+        <h2>あそびかた</h2>
+        <ol class="howto">
+          <li>ボールを持ってレーンの前へ</li>
+          <li>ねらいを決めて転がそう</li>
+          <li>画面のボールが飛んでいくよ</li>
+          <li>ハイスコアをねらおう！</li>
+        </ol>
+      </div>
+      <div class="card last">
+        <h2>前回の投球</h2>
+        <div id="lastBody" class="none">まだ投球はありません</div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="hs" id="hs" hidden>
+  <div class="box" id="hsBox">
+    <div class="crown">🏆</div>
+    <div class="head">ハイスコア！</div>
+    <div class="score" id="hsScore"></div>
+    <div class="label">なまえ</div>
+    <div class="name" id="hsName"></div>
+  </div>
 </div>
 <script>
   const $ = (id) => document.getElementById(id);
   const cam = $('cam');
   const overlay = $('overlay');
-  let detData = null;
-  let throwData = null;
+  let detData = null, throwData = null, unityData = null, cameraRunning = true;
+  let lastShownId = null;
 
-  function drawPath(ctx, points, sx, sy, color, width) {
+  // 映像を枠いっぱいに (縦横比を保って) 表示し、線を描く canvas を重ねる。
+  function fitCamera() {
+    const box = $('camera');
+    const nw = cam.naturalWidth || 16, nh = cam.naturalHeight || 9;
+    const scale = Math.min(box.clientWidth / nw, box.clientHeight / nh);
+    const w = Math.floor(nw * scale), h = Math.floor(nh * scale);
+    if (cam.width !== w) { cam.width = w; cam.style.width = w + 'px'; }
+    if (cam.height !== h) { cam.height = h; cam.style.height = h + 'px'; }
+    if (overlay.width !== w) { overlay.width = w; overlay.style.width = w + 'px'; }
+    if (overlay.height !== h) { overlay.height = h; overlay.style.height = h + 'px'; }
+  }
+
+  function drawPath(ctx, points, sx, sy, color, width, glow) {
     if (!points || points.length < 2) return;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
+    ctx.save();
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.shadowColor = glow; ctx.shadowBlur = width * 3;
     ctx.beginPath();
-    points.forEach((p, i) => {
-      if (i === 0) ctx.moveTo(p[0] * sx, p[1] * sy); else ctx.lineTo(p[0] * sx, p[1] * sy);
-    });
+    points.forEach((p, i) => { if (i === 0) ctx.moveTo(p[0] * sx, p[1] * sy); else ctx.lineTo(p[0] * sx, p[1] * sy); });
     ctx.stroke();
+    ctx.restore();
   }
 
   // 管理画面と同じ判定 (範囲内かつ登録した大きさに近い検出だけを使う)。
   function isUsable(b, fw, fh) {
-    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
-    const t = throwData;
-    if (t && t.roi) {
-      if (cx < t.roi.x0 * fw || cx >= t.roi.x1 * fw || cy < t.roi.y0 * fh || cy >= t.roi.y1 * fh) return false;
-    }
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2, t = throwData;
+    if (t && t.roi && (cx < t.roi.x0 * fw || cx >= t.roi.x1 * fw || cy < t.roi.y0 * fh || cy >= t.roi.y1 * fh)) return false;
     if (t && t.ball_size) {
       const size = (b.w + b.h) / 2, expected = t.ball_size * fh;
       if (size < expected * 0.5 || size > expected * 1.5) return false;
@@ -703,92 +827,131 @@ const char* const kDisplayHtml = R"HTML(<!doctype html>
   }
 
   function render() {
-    const W = cam.clientWidth, H = cam.clientHeight;
-    if (overlay.width !== W) overlay.width = W;
-    if (overlay.height !== H) overlay.height = H;
-    const ctx = overlay.getContext('2d');
+    fitCamera();
+    const W = overlay.width, H = overlay.height, ctx = overlay.getContext('2d');
     ctx.clearRect(0, 0, W, H);
-    const base = Math.max(3, Math.min(W, H) / 120);
-
-    // 検出範囲の外を少し暗くする
+    const base = Math.max(3, Math.min(W, H) / 110);
     const t = throwData;
-    const roi = t && t.roi;
-    if (roi) {
-      ctx.fillStyle = 'rgba(0,0,0,0.35)';
-      ctx.fillRect(0, 0, W, roi.y0 * H);
-      ctx.fillRect(0, roi.y1 * H, W, H - roi.y1 * H);
-      ctx.fillRect(0, roi.y0 * H, roi.x0 * W, (roi.y1 - roi.y0) * H);
-      ctx.fillRect(roi.x1 * W, roi.y0 * H, W - roi.x1 * W, (roi.y1 - roi.y0) * H);
+    if (t && t.roi) {
+      const r = t.roi;
+      ctx.fillStyle = 'rgba(0,0,10,0.45)';
+      ctx.fillRect(0, 0, W, r.y0 * H);
+      ctx.fillRect(0, r.y1 * H, W, H - r.y1 * H);
+      ctx.fillRect(0, r.y0 * H, r.x0 * W, (r.y1 - r.y0) * H);
+      ctx.fillRect(r.x1 * W, r.y0 * H, W - r.x1 * W, (r.y1 - r.y0) * H);
     }
-
-    // 軌跡: 前回の投球 (水色) と追跡中 (黄色)
     if (t && t.enabled && t.frame_width) {
       const sx = W / t.frame_width, sy = H / t.frame_height;
-      if (t.last && !t.last.is_test && t.last.accepted) drawPath(ctx, t.last.points, sx, sy, 'rgba(51,204,255,0.8)', base);
-      drawPath(ctx, t.tracking_points, sx, sy, '#ffd400', base * 1.4);
+      if (t.last && !t.last.is_test && t.last.accepted) drawPath(ctx, t.last.points, sx, sy, 'rgba(45,226,255,0.75)', base, '#2de2ff');
+      drawPath(ctx, t.tracking_points, sx, sy, '#ffd23f', base * 1.5, '#ffb000');
     }
-
-    // ボール: 使っている検出だけ丸で囲む
     const d = detData;
     if (d && d.enabled && d.frame_width) {
       const sx = W / d.frame_width, sy = H / d.frame_height;
-      ctx.strokeStyle = '#00ff66';
-      ctx.lineWidth = base;
+      const pulse = 1 + 0.12 * Math.sin(Date.now() / 150);
       for (const b of d.detections) {
         if (!isUsable(b, d.frame_width, d.frame_height)) continue;
-        const r = Math.max(b.w * sx, b.h * sy) / 2 + base * 2;
-        ctx.beginPath();
-        ctx.arc((b.x + b.w / 2) * sx, (b.y + b.h / 2) * sy, r, 0, Math.PI * 2);
-        ctx.stroke();
+        const r = (Math.max(b.w * sx, b.h * sy) / 2 + base * 2) * pulse;
+        ctx.save();
+        ctx.strokeStyle = '#3dff8b'; ctx.lineWidth = base; ctx.shadowColor = '#3dff8b'; ctx.shadowBlur = base * 4;
+        ctx.beginPath(); ctx.arc((b.x + b.w / 2) * sx, (b.y + b.h / 2) * sy, r, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
       }
     }
   }
 
-  async function getJson(url) {
-    const r = await fetch(url, { cache: 'no-store' });
-    return r.json();
-  }
-  async function pollDetections() {
-    try { detData = await getJson('/api/detections'); } catch (e) { detData = null; }
-    render();
-  }
-  async function pollThrow() {
-    try { throwData = await getJson('/api/throw'); } catch (e) { throwData = null; }
+  function setStatus(kind, icon, msg, hint) {
+    $('status').className = 'card status ' + kind;
+    $('stIcon').textContent = icon;
+    $('stMsg').textContent = msg;
+    $('stHint').textContent = hint || '';
   }
 
-  let cameraRunning = true;
+  function updateStatus() {
+    const t = throwData, u = unityData;
+    if (!cameraRunning) return setStatus('', '📷', 'カメラを準備中', 'ちょっと待ってね');
+    if (!t || !t.enabled || !t.armed) return setStatus('', '🛠️', 'ただいま準備中', 'ちょっと待ってね');
+    if (u && u.connected && u.state && u.state !== 'Playing') return setStatus('', '🎳', 'まもなくスタート！', 'スタッフの合図を待ってね');
+    if (t.tracking) return setStatus('track', '👀', 'ボールを追いかけ中…', '');
+    return setStatus('go', '🎳', 'ボールを転がしてね！', 'ねらいを決めて、まっすぐ！');
+  }
+
+  function shout(text, kind) {
+    const el = $('shout');
+    el.textContent = text;
+    el.className = 'shout ' + kind;
+    void el.offsetWidth;  // アニメーションをやり直す
+    el.className = 'shout ' + kind + ' show';
+  }
+
+  function updateLast() {
+    const t = throwData;
+    if (!t || !t.last || t.last.is_test) return;
+    const l = t.last;
+    if (lastShownId !== null && l.id !== lastShownId) {
+      if (l.accepted) shout('ナイスショット！', 'good'); else shout('もう一回投げてみよう！', 'again');
+    }
+    lastShownId = l.id;
+    if (l.accepted) {
+      $('lastBody').className = '';
+      $('lastBody').innerHTML = '<div class="row"><span>転がった時間</span><span class="big">' +
+        l.duration_s.toFixed(2) + '<small>秒</small></span></div>';
+    }
+  }
+
+  async function getJson(url) { const r = await fetch(url, { cache: 'no-store' }); return r.json(); }
+
+  async function pollDetections() { try { detData = await getJson('/api/detections'); } catch (e) { detData = null; } render(); }
+  async function pollThrow() {
+    try { throwData = await getJson('/api/throw'); } catch (e) { throwData = null; }
+    updateLast(); updateStatus();
+  }
   async function pollStatus() {
     try {
       const s = await getJson('/api/status');
       if (s.camera_running && !cameraRunning) cam.src = '/stream?t=' + Date.now();
       cameraRunning = s.camera_running;
-      $('wait').hidden = s.camera_running;
-    } catch (e) {
-      $('wait').hidden = false;
+    } catch (e) { cameraRunning = false; }
+    $('camWait').hidden = cameraRunning;
+    const now = new Date();
+    $('clock').textContent = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+  }
+
+  let sparksMade = false;
+  function makeSparks() {
+    if (sparksMade) return;
+    sparksMade = true;
+    const colors = ['#ffd23f', '#ff3fa4', '#2de2ff', '#ffffff', '#7dff9b'];
+    for (let i = 0; i < 40; i++) {
+      const s = document.createElement('i');
+      s.className = 'spark';
+      s.style.left = (Math.random() * 100) + '%';
+      s.style.background = colors[i % colors.length];
+      s.style.animationDuration = (2.5 + Math.random() * 3) + 's';
+      s.style.animationDelay = (-Math.random() * 5) + 's';
+      $('hsBox').appendChild(s);
     }
   }
 
   async function pollUnity() {
-    try {
-      const u = await getJson('/api/unity/status');
-      const show = u.connected && u.name_input;
-      $('nameBox').hidden = !show;
-      if (!show) return;
-      $('score').textContent = u.score >= 0 ? `スコア ${u.score}` : '';
-      const value = $('nameValue');
-      const name = u.name_draft || '';
-      value.textContent = name || 'なまえを入力しています';
-      value.className = 'value' + (name ? '' : ' empty');
-      const caret = document.createElement('span');
-      caret.className = 'caret';
-      value.appendChild(caret);
-    } catch (e) {
-      $('nameBox').hidden = true;
-    }
+    try { unityData = await getJson('/api/unity/status'); } catch (e) { unityData = null; }
+    const u = unityData;
+    const show = !!(u && u.connected && u.name_input);
+    $('hs').hidden = !show;
+    if (!show) return;
+    makeSparks();
+    $('hsScore').innerHTML = u.score >= 0 ? 'スコア<b>' + u.score + '</b>' : '';
+    const el = $('hsName'), name = u.name_draft || '';
+    el.textContent = name || 'なまえを入力しています';
+    el.className = 'name' + (name ? '' : ' empty');
+    const caret = document.createElement('span');
+    caret.className = 'caret';
+    el.appendChild(caret);
   }
 
+  cam.addEventListener('load', render);
   window.addEventListener('resize', render);
-  pollStatus();
+  pollStatus(); pollThrow(); pollUnity();
   setInterval(pollStatus, 1000);
   setInterval(pollDetections, 100);
   setInterval(pollThrow, 200);
