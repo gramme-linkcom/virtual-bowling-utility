@@ -20,6 +20,31 @@ double sign_of(double value) {
 
 }  // namespace
 
+const char* to_string(BowlerSide side) {
+    switch (side) {
+        case BowlerSide::Near:
+            return "near";
+        case BowlerSide::Far:
+            return "far";
+        case BowlerSide::Auto:
+        default:
+            return "auto";
+    }
+}
+
+bool parse_bowler_side(const std::string& text, BowlerSide& side) {
+    if (text == "auto") {
+        side = BowlerSide::Auto;
+    } else if (text == "near") {
+        side = BowlerSide::Near;
+    } else if (text == "far") {
+        side = BowlerSide::Far;
+    } else {
+        return false;
+    }
+    return true;
+}
+
 const char* to_string(LaneAxis axis) {
     switch (axis) {
         case LaneAxis::Vertical:
@@ -316,9 +341,24 @@ ThrowResult ThrowTracker::finish() const {
         return result;
     }
 
+    // 投げる人が下 (縦向きに直したとき) にいるか。
+    // 以前は「追跡の始まりが画面の下半分か」で決めていたが、速いボールで最初を見失って
+    // レーンの半分を過ぎてから追跡が始まると、左右が逆になっていた (2026-10-25 修正)。
+    // 自動のときは、ボールが転がった向き (上へ向かったら投げる人は下) で決める。
+    const bool is_moving_up = last.y < first.y;
+    bool is_from_bottom = is_moving_up;
+    if (config_.bowler_side != BowlerSide::Auto) {
+        is_from_bottom = config_.bowler_side == BowlerSide::Near;
+        if (is_from_bottom != is_moving_up) {
+            // 投げる人の方へ戻ってくる動き (ボールを拾って戻るなど)
+            result.reject_reason = "投げる人の方へ戻る動きでした";
+            return result;
+        }
+    }
+
     double direction_x = 1.0;
     double first_position = first.x;
-    if (first.y > height / 2.0) {
+    if (is_from_bottom) {
         // 下から上へ転がった。投げる側から見た左右に合わせて反転する。
         direction_x = -1.0;
         first_position = width - first.x;

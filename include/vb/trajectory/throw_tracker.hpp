@@ -28,6 +28,15 @@ enum class LaneAxis {
     Horizontal,  // 左右に転がる (投げる人は画面の左か右。カメラを 90 度回して付けたとき)
 };
 
+// 投げる人がいる側 (レーンを縦向きに直したときの上下)。
+enum class BowlerSide {
+    Auto,  // 投球ごとに、ボールが転がった向きで判定する
+    Near,  // 画面の下 (横向きのレーンなら左)
+    Far,   // 画面の上 (横向きのレーンなら右)
+};
+const char* to_string(BowlerSide side);
+bool parse_bowler_side(const std::string& text, BowlerSide& side);
+
 const char* to_string(LaneAxis axis);
 // "auto" / "vertical" / "horizontal" を読む。それ以外なら false。
 bool parse_lane_axis(const std::string& text, LaneAxis& axis);
@@ -37,6 +46,8 @@ struct TrackerConfig {
     LaneAxis axis = LaneAxis::Auto;
     // 左右を反転する (カメラの映像が鏡像になっているとき)。
     bool is_mirrored = false;
+    // 投げる人がいる側。固定すると、逆向き (投げる人の方へ戻る) の動きは投球として扱わない。
+    BowlerSide bowler_side = BowlerSide::Auto;
     // ボールが動かなくなって (または見えなくなって) から投球を確定するまでの時間。
     // 去年の Python (camera.py) は 0.2 秒。YOLO の取りこぼしを考えて少し長めにする。
     double end_wait_s = 0.3;
@@ -109,6 +120,9 @@ public:
     void set_orientation(LaneAxis axis, bool is_mirrored) {
         config_.axis = axis;
         config_.is_mirrored = is_mirrored;
+    }
+    void set_bowler_side(BowlerSide side) {
+        config_.bowler_side = side;
     }
 
     // 追跡中の軌跡を捨てる (去年の R キー)。

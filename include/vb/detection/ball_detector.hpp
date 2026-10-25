@@ -55,6 +55,10 @@ public:
     // 使うモデル (ONNX) を変える。読み直して試しに推論するので数秒かかる。
     // 失敗したら今のモデルのまま false を返す。detect() と同じスレッドから呼ぶこと。
     bool set_model(const std::string& model_path, std::string& message);
+    // 信頼度のしきい値。detect() と同じスレッドから呼ぶこと。
+    void set_conf_threshold(float threshold) {
+        config_.conf_threshold = threshold;
+    }
     std::vector<Detection> detect(const cv::Mat& bgr_frame) override;
 
     const DetectorConfig& config() const {

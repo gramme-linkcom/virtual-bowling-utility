@@ -1,7 +1,11 @@
 #include "vb/detection/switchable_detector.hpp"
 
+#include <opencv2/imgproc.hpp>
+
 #include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <vector>
 
 namespace detection {
 
@@ -20,6 +24,71 @@ bool parse_detector_mode(const std::string& text, DetectorMode& mode) {
     return true;
 }
 
+const char* to_string(Enhance enhance) {
+    switch (enhance) {
+        case Enhance::GammaWeak:
+            return "gamma_weak";
+        case Enhance::GammaStrong:
+            return "gamma_strong";
+        case Enhance::Clahe:
+            return "clahe";
+        case Enhance::None:
+        default:
+            return "none";
+    }
+}
+
+bool parse_enhance(const std::string& text, Enhance& enhance) {
+    if (text == "none") {
+        enhance = Enhance::None;
+    } else if (text == "gamma_weak") {
+        enhance = Enhance::GammaWeak;
+    } else if (text == "gamma_strong") {
+        enhance = Enhance::GammaStrong;
+    } else if (text == "clahe") {
+        enhance = Enhance::Clahe;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+void SwitchableDetector::set_conf_threshold(float threshold) {
+    conf_threshold_ = std::clamp(threshold, 0.01f, 0.99f);
+}
+
+const cv::Mat& SwitchableDetector::enhance_frame(const cv::Mat& frame) {
+    const Enhance enhance = this->enhance();
+    if (enhance == Enhance::None || frame.empty() || frame.type() != CV_8UC3) {
+        return frame;
+    }
+    if (enhance == Enhance::Clahe) {
+        // 明るさ (Lab の L) だけコントラストを上げる。色は変えない。
+        cv::Mat lab;
+        cv::cvtColor(frame, lab, cv::COLOR_BGR2Lab);
+        std::vector<cv::Mat> channels;
+        cv::split(lab, channels);
+        static thread_local cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
+        clahe->apply(channels[0], channels[0]);
+        cv::merge(channels, lab);
+        cv::cvtColor(lab, enhanced_, cv::COLOR_Lab2BGR);
+        return enhanced_;
+    }
+    // ガンマ補正: 出力 = 255 × (入力 / 255)^γ。γ < 1 で暗い所ほど明るくなる。
+    const int kind = static_cast<int>(enhance);
+    if (gamma_lut_for_ != kind) {
+        const double gamma = enhance == Enhance::GammaStrong ? 0.55 : 0.75;
+        gamma_lut_.create(1, 256, CV_8U);
+        for (int i = 0; i < 256; ++i) {
+            gamma_lut_.at<unsigned char>(i) =
+                cv::saturate_cast<unsigned char>(std::pow(i / 255.0, gamma) * 255.0 + 0.5);
+        }
+        gamma_lut_for_ = kind;
+    }
+    cv::LUT(frame, gamma_lut_, enhanced_);
+    return enhanced_;
+}
+
 SwitchableDetector::SwitchableDetector(
     BallDetector* yolo,
     MotionDetector& motion,
@@ -33,6 +102,7 @@ SwitchableDetector::SwitchableDetector(
     if (yolo_ != nullptr) {
         model_path_ = yolo_->config().model_path;
         input_size_ = yolo_->config().input_size;
+        conf_threshold_ = yolo_->config().conf_threshold;
     }
 }
 
@@ -114,7 +184,8 @@ std::vector<Detection> SwitchableDetector::detect(const cv::Mat& bgr_frame) {
     if (mode() == DetectorMode::Yolo && yolo_ != nullptr) {
         // 次に OpenCV に切り替えたとき、古い背景を使わないようにする。
         needs_motion_reset_ = true;
-        return yolo_->detect(bgr_frame);
+        yolo_->set_conf_threshold(conf_threshold_.load());
+        return yolo_->detect(enhance_frame(bgr_frame));
     }
 
     // MotionDetector の設定変更・リセットは、検出スレッドの中でだけ行う。

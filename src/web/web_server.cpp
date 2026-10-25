@@ -162,6 +162,20 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
       <span id="modeMsg" class="muted"></span>
     </div>
     <div class="row">
+      信頼度のしきい値 <input id="confIn" type="number" min="0.05" max="0.9" step="0.05" value="0.25">
+      暗いときの補正
+      <select id="enhSel">
+        <option value="none">なし</option>
+        <option value="gamma_weak">少し明るく</option>
+        <option value="gamma_strong">かなり明るく</option>
+        <option value="clahe">暗い所のコントラストを上げる</option>
+      </select>
+      <button id="tuneBtn">適用</button>
+      <span id="tuneMsg" class="muted"></span>
+    </div>
+    <div class="muted">暗くてボールを拾えないとき: しきい値を下げる (0.15 など) か、補正を入れてください。
+      しきい値を下げすぎると誤検出が増えます (検出範囲とボールの大きさの登録で減らせます)。補正は YOLO に渡す画像だけに掛かります。</div>
+    <div class="row">
       モデル
       <select id="modelSel" style="min-width:220px"></select>
       <button id="modelBtn">切り替え</button>
@@ -188,10 +202,17 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
         <option value="horizontal">横 (画面の左右に転がる)</option>
       </select>
       <label><input type="checkbox" id="mirrorChk" style="width:auto"> 左右反転</label>
+      投げる人の位置
+      <select id="sideSel">
+        <option value="auto">自動 (転がった向きで判定)</option>
+        <option value="near">画面の下 (横向きなら左)</option>
+        <option value="far">画面の上 (横向きなら右)</option>
+      </select>
       <span id="axisMsg" class="muted"></span>
     </div>
     <div class="muted">範囲はレーン全体を囲んでください。範囲のうちレーンと直角な方向の幅がレーンの横幅 (既定 5m) になります。
-      投げる人が画面のどちら側にいても自動で判定します。Unity で左右が逆に飛ぶときは「左右反転」を入れてください。</div>
+      投げる人の位置は「自動」でも判定しますが、展示のように位置が決まっているときは固定するのが確実です
+      (固定すると、投げる人の方へ戻る動きは投球として扱いません)。Unity で左右が逆に飛ぶときは「左右反転」を入れてください。</div>
     <div class="row">
       <button id="sizeBtn">ボールの大きさを登録</button>
       <button class="sub" id="sizeClearBtn">登録を解除</button>
@@ -360,6 +381,10 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
           : 'YOLO の計算: ' + names[d.compute] + (d.model ? ' / モデル: ' + d.model + ' (入力 ' + d.input_size + ')' : '') +
             (d.compute_message ? ' — ' + d.compute_message : '');
       }
+      if (d.enabled && d.conf !== undefined && !tuneTouched) {
+        $('confIn').value = d.conf.toFixed(2);
+        $('enhSel').value = d.enhance;
+      }
       if (d.enabled && d.mode && !modeTouched) {
         $('modeSel').value = d.mode;
         $('cvTh').value = d.cv_threshold;
@@ -403,6 +428,7 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
       }
       if (document.activeElement !== $('axisSel')) $('axisSel').value = t.axis;
       $('mirrorChk').checked = t.mirror;
+      if (t.side && document.activeElement !== $('sideSel')) $('sideSel').value = t.side;
       if (!$('roiMsg').dataset.recent) {
         $('roiMsg').className = 'muted';
         $('roiMsg').textContent = t.roi ? '設定済み' : '未設定 (画面全体)';
@@ -451,6 +477,13 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
   }
 
   let modeTouched = false;
+  let tuneTouched = false;
+  $('confIn').addEventListener('input', () => { tuneTouched = true; });
+  $('enhSel').addEventListener('change', () => { tuneTouched = true; });
+  $('tuneBtn').addEventListener('click', async () => {
+    await action('/api/detector', { conf: $('confIn').value, enhance: $('enhSel').value }, 'tuneMsg');
+    tuneTouched = false;
+  });
   $('modeSel').addEventListener('change', () => { modeTouched = true; });
   $('cvTh').addEventListener('input', () => { modeTouched = true; });
   $('computeSel').addEventListener('change', () => { modeTouched = true; });
@@ -499,9 +532,10 @@ const char* const kIndexHtml = R"HTML(<!doctype html>
   $('sizeBtn').addEventListener('click', () => action('/api/ball-size', { action: 'register' }, 'sizeMsg'));
   $('sizeClearBtn').addEventListener('click', () => action('/api/ball-size', { action: 'clear' }, 'sizeMsg'));
   const sendOrientation = () => action('/api/orientation',
-    { axis: $('axisSel').value, mirror: $('mirrorChk').checked ? '1' : '0' }, 'axisMsg');
+    { axis: $('axisSel').value, mirror: $('mirrorChk').checked ? '1' : '0', side: $('sideSel').value }, 'axisMsg');
   $('axisSel').addEventListener('change', sendOrientation);
   $('mirrorChk').addEventListener('change', sendOrientation);
+  $('sideSel').addEventListener('change', sendOrientation);
   $('roiClearBtn').addEventListener('click', () => action('/api/roi', { clear: '1' }, 'roiMsg'));
 
   function stopPicking() {
@@ -1319,6 +1353,8 @@ void WebServer::register_routes() {
                      << (detector_->is_compute_switching() || detector_->is_model_switching() ? "true" : "false")
                      << ",\"model\":\"" << json_escape(model_file_name(detector_->model_path()))
                      << "\",\"input_size\":" << detector_->input_size()
+                     << ",\"conf\":" << std::setprecision(2) << detector_->conf_threshold() << std::setprecision(1)
+                     << ",\"enhance\":\"" << detection::to_string(detector_->enhance()) << "\""
                      << ",\"compute_message\":\"" << json_escape(detector_->compute_message())
                      << "\"";
             }
@@ -1385,7 +1421,8 @@ void WebServer::register_routes() {
             json << "null";
         }
         json << std::setprecision(1) << ",\"axis\":\"" << trajectory::to_string(s.axis)
-             << "\",\"mirror\":" << (s.is_mirrored ? "true" : "false") << ",\"last\":";
+             << "\",\"mirror\":" << (s.is_mirrored ? "true" : "false")
+             << ",\"side\":\"" << trajectory::to_string(s.bowler_side) << "\",\"last\":";
         if (!s.last) {
             json << "null";
         } else {
@@ -1673,6 +1710,30 @@ void WebServer::register_routes() {
                 throws_->set_setting("compute", detection::to_string(target));
             }
         }
+        if (req.has_param("conf")) {
+            double conf = 0.0;
+            if (!read_number(req, "conf", conf) || conf < 0.01 || conf > 0.99) {
+                send_result(res, false, "しきい値は 0.01〜0.99 の数値で入れてください");
+                return;
+            }
+            detector_->set_conf_threshold(static_cast<float>(conf));
+            if (throws_ != nullptr) {
+                std::ostringstream text;
+                text << conf;
+                throws_->set_setting("conf", text.str());
+            }
+        }
+        if (req.has_param("enhance")) {
+            detection::Enhance enhance = detection::Enhance::None;
+            if (!detection::parse_enhance(req.get_param_value("enhance"), enhance)) {
+                send_result(res, false, "補正の値が不正です");
+                return;
+            }
+            detector_->set_enhance(enhance);
+            if (throws_ != nullptr) {
+                throws_->set_setting("enhance", detection::to_string(enhance));
+            }
+        }
         if (req.has_param("threshold")) {
             double threshold = 0.0;
             if (!read_number(req, "threshold", threshold) || threshold < 1 || threshold > 255) {
@@ -1732,7 +1793,12 @@ void WebServer::register_routes() {
             send_result(res, false, "向きの値が不正です");
             return;
         }
-        throws_->set_orientation(axis, req.get_param_value("mirror") == "1");
+        trajectory::BowlerSide side = throws_->snapshot().bowler_side;
+        if (req.has_param("side") && !trajectory::parse_bowler_side(req.get_param_value("side"), side)) {
+            send_result(res, false, "投げる人の位置の値が不正です");
+            return;
+        }
+        throws_->set_orientation(axis, req.get_param_value("mirror") == "1", side);
         send_result(res, true, "レーンの向きを変更しました");
     });
 

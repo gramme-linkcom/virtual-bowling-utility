@@ -60,6 +60,7 @@ struct ThrowSnapshot {
     std::optional<double> ball_size_ratio;
     LaneAxis axis = LaneAxis::Auto;
     bool is_mirrored = false;
+    BowlerSide bowler_side = BowlerSide::Auto;
     std::optional<ThrowRecord> last;
 };
 
@@ -93,7 +94,7 @@ public:
     bool set_roi(const std::optional<Roi>& roi, std::string& message);
 
     // レーンの向き (自動・縦・横) と左右反転を設定する。
-    void set_orientation(LaneAxis axis, bool is_mirrored);
+    void set_orientation(LaneAxis axis, bool is_mirrored, BowlerSide bowler_side);
 
     // 出力先を変える。フォルダを指定したら中の vector.txt にする。空文字なら書き込みを止める。
     bool set_output_path(const std::string& path, std::string& message);

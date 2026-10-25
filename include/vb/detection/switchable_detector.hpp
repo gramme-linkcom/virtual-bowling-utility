@@ -18,6 +18,16 @@ enum class DetectorMode {
 const char* to_string(DetectorMode mode);
 bool parse_detector_mode(const std::string& text, DetectorMode& mode);
 
+// 暗いときの明るさ補正 (YOLO に渡す画像だけに掛ける。画面表示や保存する画像はそのまま)。
+enum class Enhance {
+    None,         // 補正しない
+    GammaWeak,    // 少し明るくする (ガンマ 0.75)
+    GammaStrong,  // かなり明るくする (ガンマ 0.55)
+    Clahe,        // 暗い所のコントラストを上げる (CLAHE)
+};
+const char* to_string(Enhance enhance);
+bool parse_enhance(const std::string& text, Enhance& enhance);
+
 // YOLO と OpenCV だけの検出を、動かしたまま切り替えられるようにする。
 // detect() は検出スレッドから、set_*() は Web サーバーから呼ばれる。
 class SwitchableDetector : public IBallDetector {
@@ -56,6 +66,19 @@ public:
         return input_size_.load();
     }
 
+    // YOLO の信頼度のしきい値 (0.01〜0.99)。暗くて拾えないときは下げる。
+    void set_conf_threshold(float threshold);
+    float conf_threshold() const {
+        return conf_threshold_.load();
+    }
+    // 暗いときの明るさ補正。
+    void set_enhance(Enhance enhance) {
+        enhance_ = static_cast<int>(enhance);
+    }
+    Enhance enhance() const {
+        return static_cast<Enhance>(enhance_.load());
+    }
+
     // OpenCV 検出の感度 (背景との差のしきい値 1〜255)。
     void set_cv_threshold(int threshold);
     int cv_threshold() const {
@@ -63,7 +86,15 @@ public:
     }
 
 private:
+    // 明るさ補正を掛けた画像を返す (補正なしなら frame そのもの)。検出スレッドだけが使う。
+    const cv::Mat& enhance_frame(const cv::Mat& frame);
+
     BallDetector* yolo_;
+    std::atomic<float> conf_threshold_{0.25f};
+    std::atomic<int> enhance_{0};
+    cv::Mat enhanced_;
+    cv::Mat gamma_lut_;
+    int gamma_lut_for_ = -1;  // gamma_lut_ がどの補正用か
     MotionDetector& motion_;
     std::atomic<int> mode_;
     std::atomic<int> cv_threshold_;

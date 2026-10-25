@@ -61,6 +61,8 @@ struct AppOptions {
     trajectory::ThrowServiceConfig throws;
     // --model を明示したかどうか。明示したのに無ければ起動を止める。
     bool is_model_explicit = false;
+    // --conf を明示したか (明示しなければ前回 Web UI で決めた値を使う)
+    bool is_conf_explicit = false;
     // 起動したらすぐ計測を始める (Web UI の「計測開始」を押さなくてよい)。
     bool start_armed = false;
     bool is_camera_explicit = false;
@@ -201,6 +203,7 @@ bool parse_options(
             options.detector.model_path = argv[++i];
             options.is_model_explicit = true;
         } else if (arg == "--conf") {
+            options.is_conf_explicit = true;
             if (!has_value || !parse_float(argv[++i], 0.01f, 0.99f, options.detector.conf_threshold)) {
                 error = "--conf には 0.01〜0.99 の数値を指定してください";
                 return false;
@@ -327,6 +330,10 @@ int main(int argc, char* argv[]) {
     if (!options.is_compute_explicit) {
         detection::parse_compute_target(throw_service.setting(kComputeSettingKey), options.detector.target);
     }
+    // 信頼度のしきい値は --conf が優先。無ければ前回 Web UI で決めた値。
+    if (!options.is_conf_explicit) {
+        parse_float(throw_service.setting("conf"), 0.01f, 0.99f, options.detector.conf_threshold);
+    }
     // モデルは --model が優先。無ければ前回 Web UI で選んだもの (見つからなければ既定の models/best.onnx)。
     const std::string default_model_path = options.detector.model_path;
     if (!options.is_model_explicit) {
@@ -380,6 +387,13 @@ int main(int argc, char* argv[]) {
     }
     detection::MotionDetector motion(options.motion);
     detection::SwitchableDetector detector(is_yolo_loaded ? &yolo : nullptr, motion, mode);
+    {
+        // 暗いときの明るさ補正 (前回 Web UI で選んだもの)
+        detection::Enhance enhance = detection::Enhance::None;
+        if (detection::parse_enhance(throw_service.setting("enhance"), enhance)) {
+            detector.set_enhance(enhance);
+        }
+    }
     std::cout << "[detector] 検出方法: "
               << (detector.mode() == detection::DetectorMode::Yolo ? "YOLO" : "OpenCV だけ")
               << "\n";

@@ -104,6 +104,11 @@ void ThrowService::load_settings_locked() {
             }
         } else if (key == "mirror") {
             tracker_.set_orientation(tracker_.config().axis, value == "1");
+        } else if (key == "bowler_side") {
+            BowlerSide side = BowlerSide::Auto;
+            if (parse_bowler_side(value, side)) {
+                tracker_.set_bowler_side(side);
+            }
         } else if (key == "ball_size") {
             double ratio = 0.0;
             if (in >> ratio && ratio > 0.0 && ratio < 1.0) {
@@ -133,6 +138,7 @@ void ThrowService::save_settings_locked() {
     }
     text << "lane_axis=" << to_string(tracker_.config().axis) << "\n";
     text << "mirror=" << (tracker_.config().is_mirrored ? 1 : 0) << "\n";
+    text << "bowler_side=" << to_string(tracker_.config().bowler_side) << "\n";
     for (const auto& [key, value] : extra_settings_) {
         text << key << "=" << value << "\n";
     }
@@ -278,13 +284,14 @@ void ThrowService::reset_tracking() {
     std::cout << "[throw] 追跡中の軌跡をリセットしました\n";
 }
 
-void ThrowService::set_orientation(LaneAxis axis, bool is_mirrored) {
+void ThrowService::set_orientation(LaneAxis axis, bool is_mirrored, BowlerSide bowler_side) {
     std::lock_guard<std::mutex> lock(mutex_);
     tracker_.set_orientation(axis, is_mirrored);
+    tracker_.set_bowler_side(bowler_side);
     tracker_.reset();
     save_settings_locked();
     std::cout << "[throw] レーンの向き: " << to_string(axis) << (is_mirrored ? " (左右反転)" : "")
-              << "\n";
+              << " / 投げる人: " << to_string(bowler_side) << "\n";
 }
 
 bool ThrowService::register_ball_size(std::string& message) {
@@ -454,6 +461,7 @@ ThrowSnapshot ThrowService::snapshot() const {
     snapshot.ball_size_ratio = ball_size_ratio_;
     snapshot.axis = tracker_.config().axis;
     snapshot.is_mirrored = tracker_.config().is_mirrored;
+    snapshot.bowler_side = tracker_.config().bowler_side;
     snapshot.last = last_;
 
     int roi_x = 0;
